@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(//e//**)",
+      "Bash(rm \"e:/coindits 76-ip/app/backtest/page.tsx\")",
+      "Bash(rmdir \"e:/coindits 76-ip/app/backtest\")",
+      "Bash(rm \"e:/coindits 76-ip/components/EMABacktestTerminal.tsx\")",
+      "Bash(rm \"e:/coindits 76-ip/lib/services/ema-backtest.ts\")",
+      "Bash(rm \"e:/coindits 76-ip/lib/services/signal-backtest.ts\")",
+      "Bash(taskkill //PID 62012 //F)"
+    ]
+  }
+}

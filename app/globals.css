@@ -1,0 +1,164 @@
+@import "tailwindcss";
+@plugin "tailwindcss-animate";
+
+@custom-variant dark (&:is(.dark *));
+
+@theme {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --radius: 0.5rem;
+}
+
+:root {
+  /* Gecko Style Light Mode */
+  --background: #f8fafd;
+  --foreground: #0b0d10;
+  --card: #ffffff;
+  --card-foreground: #0b0d10;
+  --popover: #ffffff;
+  --popover-foreground: #0b0d10;
+  --primary: #9d4eff;
+  --primary-foreground: #ffffff;
+  --secondary: #eff2f5;
+  --secondary-foreground: #58667e;
+  --muted: #f8fafd;
+  --muted-foreground: #58667e;
+  --accent: #eff2f5;
+  --accent-foreground: #0b0d10;
+  --destructive: #f6465d;
+  --destructive-foreground: #ffffff;
+  --border: #eff2f5;
+  --input: #eff2f5;
+  --ring: #9d4eff;
+  --radius: 8px;
+
+  --header-bg: #ffffff;
+  --header-search-bg: #eff2f5;
+  --header-text: #0b0d10;
+  --header-subtext: #58667e;
+}
+
+.dark {
+  /* Gecko Style Dark Mode */
+  --background: #0b0d10;
+  --foreground: #ffffff;
+  --card: #15171d;
+  --card-foreground: #ffffff;
+  --popover: #1b1e26;
+  --popover-foreground: #ffffff;
+  --primary: #9d4eff;
+  --primary-foreground: #ffffff;
+  --secondary: #22252c;
+  --secondary-foreground: #a9abb1;
+  --muted: #1b1e26;
+  --muted-foreground: #a9abb1;
+  --accent: #22252c;
+  --accent-foreground: #ffffff;
+  --destructive: #f6465d;
+  --destructive-foreground: #ffffff;
+  --border: #22252c;
+  --input: #1b1e26;
+  --ring: #9d4eff;
+
+  --header-bg: #101217;
+  --header-search-bg: #1b1e26;
+  --header-text: #ffffff;
+  --header-subtext: #a9abb1;
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+
+  body {
+    @apply bg-background text-foreground font-sans antialiased transition-colors duration-200;
+    letter-spacing: -0.01em;
+  }
+}
+
+/* Gecko Terminal Components */
+.gecko-card {
+  @apply bg-card border border-border rounded-xl overflow-hidden;
+}
+
+.gecko-table-header {
+  @apply h-11 border-b border-border text-[11px] font-bold text-muted-foreground uppercase tracking-wider bg-muted/20;
+}
+
+.gecko-table-row {
+  @apply border-b border-border hover:bg-muted/40 transition-colors cursor-pointer;
+}
+
+.gecko-sidebar-item {
+  @apply flex items-center gap-3 px-3 py-2.5 rounded-lg text-[13px] font-semibold transition-all;
+  @apply text-muted-foreground hover:bg-muted hover:text-foreground;
+}
+
+.gecko-sidebar-item.active {
+  @apply bg-primary/10 text-primary;
+}
+
+/* Custom Scrollbar - Desktop */
+@media (min-width: 768px) {
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+  ::-webkit-scrollbar-track {
+    @apply bg-transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    @apply bg-border rounded-full hover:bg-muted-foreground/30 transition-colors;
+  }
+}
+
+/* No Scrollbar Utility for Mobile Horizontal Scrolling */
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+.no-scrollbar {
+  -ms-overflow-style: none;  /* IE and Edge */
+  scrollbar-width: none;  /* Firefox */
+}
+
+/* Safe Area Utilities for Mobile */
+.pb-safe {
+  padding-bottom: env(safe-area-inset-bottom, 20px);
+}
+
+@theme inline {
+  --font-sans: 'Inter', ui-sans-serif, system-ui, sans-serif;
+}
+
+/* Ticker Animation */
+@keyframes ticker {
+  0% {
+    transform: translateX(0);
+  }
+
+  100% {
+    transform: translateX(-50%);
+  }
+}
+
+.animate-ticker {
+  animation: ticker 40s linear infinite;
+}
