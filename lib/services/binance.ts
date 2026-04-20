@@ -66,7 +66,7 @@ const KLINE_TTL: Record<string, number> = {
   "1d":  23  * 60 * 60_000,
 };
 
-const SIGNALS_CACHE_MS = 2 * 60_000; // 2-min cache — crossoverTimestamp comes from candle data, not scan time
+const SIGNALS_CACHE_MS = 25_000; // 25s cache — shorter than the 30s client poll so every cycle gets fresh data
 const TICKER_CACHE_MS  = 4 * 60_000;
 
 // Exact candle duration in ms — used to compute crossover close time from candlesAgo
@@ -162,6 +162,7 @@ export async function getBinanceFuturesSignals(timeframe = "1h"): Promise<MASign
     type Candidate = {
       pair: BinanceTicker;
       closes: number[];
+      openTimes: number[];
       alignment: ReturnType<typeof detectTripleEMAAlignment>;
       ema7Arr: number[];
       ema25Arr: number[];
@@ -194,16 +195,17 @@ export async function getBinanceFuturesSignals(timeframe = "1h"): Promise<MASign
 
           if (closedKlines.length < 200) return null;
 
-          const closes  = closedKlines.map(k => parseFloat(k[4]));
-          const ema7Arr  = calculateEMAArray(closes, 7);
-          const ema25Arr = calculateEMAArray(closes, 25);
-          const ema99Arr = calculateEMAArray(closes, 99);
+          const closes    = closedKlines.map(k => parseFloat(k[4]));
+          const openTimes = closedKlines.map(k => k[0]);
+          const ema7Arr   = calculateEMAArray(closes, 7);
+          const ema25Arr  = calculateEMAArray(closes, 25);
+          const ema99Arr  = calculateEMAArray(closes, 99);
           if (ema99Arr.length < 100) return null;
 
           const alignment = detectTripleEMAAlignment(ema7Arr, ema25Arr, ema99Arr, lookback);
           if (!alignment.type) return null;
 
-          return { pair, closes, alignment, ema7Arr, ema25Arr, ema99Arr };
+          return { pair, closes, openTimes, alignment, ema7Arr, ema25Arr, ema99Arr };
         } catch { return null; }
       }));
 
@@ -223,7 +225,7 @@ export async function getBinanceFuturesSignals(timeframe = "1h"): Promise<MASign
 
     const validSignals: MASignal[] = [];
 
-    for (const { pair, closes, alignment, ema7Arr, ema25Arr, ema99Arr } of candidates) {
+    for (const { pair, closes, openTimes, alignment, ema7Arr, ema25Arr, ema99Arr } of candidates) {
       try {
         const ema7Val  = ema7Arr[ema7Arr.length - 1];
         const ema25Val = ema25Arr[ema25Arr.length - 1];
@@ -274,12 +276,35 @@ export async function getBinanceFuturesSignals(timeframe = "1h"): Promise<MASign
         const dailyData = await fetchBinanceKlines(pair.symbol, "1d");
         const volMetric = calculateVolatilityScore(dailyData, currentPrice, quoteVol, change24h);
 
-        // Crossover timestamp = candle OPEN time (what charts label the candle by).
-        // floor(now / interval) = start of current unfinished candle.
-        // Subtract (candlesAgo + 1) intervals to reach the open of the crossover candle.
-        const candleMs = INTERVAL_MS[timeframe] ?? 60_000;
-        const crossoverTimestamp =
-          Math.floor(now / candleMs) * candleMs - (alignment.candlesAgo + 1) * candleMs;
+        // For 1d timeframe: find the exact hour within the crossover day when the daily
+        // EMAs would have crossed by simulating EMA values against each 1H candle close.
+        // For other timeframes: the kline open time is already precise enough.
+        let crossoverTimestamp = openTimes[alignment.index] ?? (Date.now() - (alignment.candlesAgo + 1) * (INTERVAL_MS[timeframe] ?? 60_000));
+
+        if (timeframe === "1d" && alignment.index > 0) {
+          try {
+            const dayOpen = openTimes[alignment.index];
+            const dayEnd  = dayOpen + 24 * 60 * 60_000;
+            const res = await fapiFetch(`/klines?symbol=${pair.symbol}&interval=1h&startTime=${dayOpen}&endTime=${dayEnd}&limit=24`);
+            const hourlyKlines: BinanceKline[] = await res.json();
+
+            const ema7Prev  = ema7Arr[alignment.index - 1];
+            const ema25Prev = ema25Arr[alignment.index - 1];
+            const ema99Prev = ema99Arr[alignment.index - 1];
+            const a7  = 2 / (7  + 1);
+            const a25 = 2 / (25 + 1);
+            const a99 = 2 / (99 + 1);
+
+            for (const hk of hourlyKlines) {
+              const p   = parseFloat(hk[4]);
+              const e7  = ema7Prev  * (1 - a7)  + p * a7;
+              const e25 = ema25Prev * (1 - a25) + p * a25;
+              const e99 = ema99Prev * (1 - a99) + p * a99;
+              const aligned = alignment.type === "BUY" ? (e7 > e25 && e25 > e99) : (e99 > e25 && e25 > e7);
+              if (aligned) { crossoverTimestamp = hk[0]; break; }
+            }
+          } catch { /* keep daily open time as fallback */ }
+        }
 
         // Coin metadata
         const rawSymbol  = pair.symbol.replace("USDT", "");

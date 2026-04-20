@@ -138,8 +138,9 @@ function buildEventId(
     timeframe: string,
     crossoverTimestamp: number,
 ): string {
-    const minuteFloor = Math.floor(crossoverTimestamp / 60_000) * 60_000;
-    return `${coinId}::${signalType}::${timeframe}::${minuteFloor}`;
+    const floorMs = CANDLE_MS[timeframe] ?? 60_000;
+    const tsFloor = Math.floor(crossoverTimestamp / floorMs) * floorMs;
+    return `${coinId}::${signalType}::${timeframe}::${tsFloor}`;
 }
 
 // ─── Sub-components ───────────────────────────────────────────────────────────
@@ -193,7 +194,6 @@ const EFSignalRow = memo(
     ({ entry, index, isNew, mounted }: { entry: EFSignalEntry; index: number; isNew: boolean; mounted: boolean }) => {
         const isBuy = entry.signalType === "BUY";
 
-        // crossoverTimestamp = exact candle where the EMA alignment was confirmed
         const signalTime = mounted
             ? new Date(entry.crossoverTimestamp).toLocaleString([], {
                 month: "short",
@@ -542,7 +542,7 @@ export default function ExchangeFuturesTerminal({
         const freshIds: string[] = [];
 
         for (const sig of rawSignals) {
-            const exactCrossoverTs = crossoverCloseTime(sig.timeframe, sig.candlesAgo ?? 0);
+            const exactCrossoverTs = sig.crossoverTimestamp ?? crossoverCloseTime(sig.timeframe, sig.candlesAgo ?? 0);
             const eventId = buildEventId(sig.coinId, sig.signalType, sig.timeframe, exactCrossoverTs);
             if (existingIds.has(eventId)) continue; // Already stored — skip
 
@@ -611,7 +611,7 @@ export default function ExchangeFuturesTerminal({
 
             for (const sig of rawData) {
                 const tf = sig.timeframe ?? activeTf;
-                const exactCrossoverTs = crossoverCloseTime(tf, sig.candlesAgo ?? 0);
+                const exactCrossoverTs = sig.crossoverTimestamp ?? crossoverCloseTime(tf, sig.candlesAgo ?? 0);
                 const eventId = buildEventId(sig.coinId, sig.signalType, tf, exactCrossoverTs);
                 const entry: EFSignalEntry = {
                     entryId: eventId,

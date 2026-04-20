@@ -52,6 +52,7 @@ export default function SignalHistoryTerminal() {
   const [syncResult, setSyncResult] = useState<{ binance: number; coingecko: number; ict: number } | null>(null);
   const [fromDate, setFromDate] = useState("");
   const [toDate, setToDate] = useState("");
+  const [latestPerCoin, setLatestPerCoin] = useState(false);
 
   const SECRET_KEY = "Alpha5!Storm8@Cloud3#Fire";
 
@@ -94,6 +95,7 @@ export default function SignalHistoryTerminal() {
         search: search || undefined,
         page,
         pageSize: ITEMS_PER_PAGE,
+        latestPerCoin,
       });
       setSignals(data);
       setTotal(count);
@@ -121,7 +123,7 @@ export default function SignalHistoryTerminal() {
     if (!isAuthenticated) return;
     setCurrentPage(1);
     fetchSignals(1);
-  }, [isAuthenticated, source, timeframe, minScore, fromDate, toDate, search]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [isAuthenticated, source, timeframe, minScore, fromDate, toDate, search, latestPerCoin]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Fetch when page changes
   useEffect(() => {
@@ -375,6 +377,21 @@ export default function SignalHistoryTerminal() {
                   className="bg-transparent border-none text-[11px] font-bold outline-none px-1 uppercase"
                 />
              </div>
+          </div>
+
+          <div className="flex flex-col gap-2">
+            <span className="text-[10px] font-black uppercase text-muted-foreground tracking-widest">Coins</span>
+            <button
+              onClick={() => setLatestPerCoin(v => !v)}
+              className={cn(
+                "h-9 px-4 rounded-lg text-[11px] font-black uppercase tracking-wide border transition-all",
+                latestPerCoin
+                  ? "bg-primary text-primary-foreground border-primary shadow-sm"
+                  : "bg-muted text-muted-foreground border-border hover:text-foreground"
+              )}
+            >
+              {latestPerCoin ? "✓ Latest Per Coin" : "Latest Per Coin"}
+            </button>
           </div>
         </div>
 

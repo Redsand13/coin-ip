@@ -2,7 +2,7 @@
 
 import { calculateCoingeckoSignals } from "@/lib/services/coingecko";
 import { getICTSignals } from "@/lib/services/ict";
-import { upsertSignals, exportCsv, querySignals, queryDistinctSymbols, type DbSignal } from "@/lib/db";
+import { upsertSignals, buildSignalId, exportCsv, querySignals, countSignals, queryDistinctSymbols, type DbSignal } from "@/lib/db";
 import { sendPushToPage } from "@/lib/services/push";
 
 const ALL_TIMEFRAMES = ["5m", "15m", "30m", "1h", "4h", "1d"];
@@ -136,12 +136,12 @@ export async function getICTSignalsAction(timeframe: string = "1h") {
       }
     }
 
-    // Flatten and deduplicate by coinId::signalType::timeframe::sweepTimestamp
+    // Flatten and deduplicate using the same candle-period floor as buildSignalId
     const seen = new Set<string>();
     const allSignals: Awaited<ReturnType<typeof getICTSignals>> = [];
     for (const signals of allResults) {
       for (const sig of signals) {
-        const id = `${sig.coinId}::${sig.signalType}::${sig.timeframe}::${sig.sweepTimestamp}`;
+        const id = buildSignalId(sig.coinId, sig.signalType, sig.timeframe, sig.sweepTimestamp);
         if (seen.has(id)) continue;
         seen.add(id);
         allSignals.push(sig);
@@ -216,6 +216,7 @@ export async function getDbSignalsAction(opts: {
   search?: string;
   page?: number;
   pageSize?: number;
+  latestPerCoin?: boolean;
 } = {}): Promise<{ signals: DbSignal[]; total: number }> {
   try {
     const source = opts.source === "all" ? undefined : opts.source;
@@ -223,12 +224,10 @@ export async function getDbSignalsAction(opts: {
     const pageSize = opts.pageSize ?? 50;
     const page = opts.page ?? 1;
     const offset = (page - 1) * pageSize;
+    const latestPerCoin = opts.latestPerCoin ?? false;
 
-    // Get total count for pagination
-    const allForCount = querySignals({ source, timeframe, minScore: opts.minScore, fromTs: opts.fromTs, toTs: opts.toTs, search: opts.search, limit: -1 });
-    const total = allForCount.length;
+    const total = countSignals({ source, timeframe, minScore: opts.minScore, fromTs: opts.fromTs, toTs: opts.toTs, search: opts.search, latestPerCoin });
 
-    // Get just this page
     const signals = querySignals({
       source,
       timeframe,
@@ -238,6 +237,7 @@ export async function getDbSignalsAction(opts: {
       search: opts.search,
       limit: pageSize,
       offset,
+      latestPerCoin,
     });
 
     return { signals, total };

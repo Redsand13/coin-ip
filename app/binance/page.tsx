@@ -9,7 +9,7 @@ export default function BinanceFuturesPage() {
                 description="Binance Futures · Triple EMA Strategy 7 › 25 › 99"
                 storageKey="coinpree_bf_signals_v12"
                 exportSource="binance"
-                scanInterval={60_000}
+                scanInterval={30_000}
                 initialData={[]}
                 fetchAction={getBinanceFuturesSignalsAction}
             />

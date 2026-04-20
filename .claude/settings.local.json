@@ -7,7 +7,12 @@
       "Bash(rm \"e:/coindits 76-ip/components/EMABacktestTerminal.tsx\")",
       "Bash(rm \"e:/coindits 76-ip/lib/services/ema-backtest.ts\")",
       "Bash(rm \"e:/coindits 76-ip/lib/services/signal-backtest.ts\")",
-      "Bash(taskkill //PID 62012 //F)"
+      "Bash(taskkill //PID 62012 //F)",
+      "Bash(find . -name \"*.db\" -not -path \"./.git/*\")",
+      "Bash(find . -path \"./data/*\" -not -path \"./.git/*\")",
+      "Bash(find . -name \"*.sql\" -not -path \"./.git/*\")",
+      "Bash(find . -name \"*.json\" -path \"*/data/*\" -not -path \"./.git/*\")",
+      "Bash(find . -type f \\\\\\( -name \"*.ts\" -o -name \"*.tsx\" \\\\\\) ! -path \"./.next/*\" ! -path \"./node_modules/*\" -exec wc -l {} +)"
     ]
   }
 }

@@ -126,6 +126,25 @@ function initSchema(db: Database.Database) {
   addColumnIfMissing(db, "signals", "volume24h",          "REAL DEFAULT 0");
   addColumnIfMissing(db, "signals", "market_cap",         "REAL DEFAULT 0");
   addColumnIfMissing(db, "signals", "image",              "TEXT DEFAULT ''");
+
+  // Deduplicate ALL timeframes: keep only the earliest stored row per
+  // (coin_id, signal_type, timeframe, candle-period). Removes duplicates from
+  // any crossoverTimestamp calculation changes across all intervals.
+  db.exec(`
+    DELETE FROM signals
+    WHERE id NOT IN (
+      SELECT MIN(id) FROM signals
+      GROUP BY coin_id, signal_type, timeframe,
+        (crossover_timestamp / CASE timeframe
+          WHEN '5m'  THEN 300000
+          WHEN '15m' THEN 900000
+          WHEN '30m' THEN 1800000
+          WHEN '1h'  THEN 3600000
+          WHEN '4h'  THEN 14400000
+          WHEN '1d'  THEN 86400000
+          ELSE 60000 END)
+    );
+  `);
 }
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -162,15 +181,25 @@ export interface DbSignal {
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-/** Same dedup logic as the UI's buildEventId */
+const CANDLE_FLOOR_MS: Record<string, number> = {
+  "5m":  5   * 60_000,
+  "15m": 15  * 60_000,
+  "30m": 30  * 60_000,
+  "1h":  60  * 60_000,
+  "4h":  4   * 60 * 60_000,
+  "1d":  24  * 60 * 60_000,
+};
+
+/** Dedup key: one entry per coin × direction × timeframe × candle period. */
 export function buildSignalId(
   coinId: string,
   signalType: string,
   timeframe: string,
   crossoverTimestamp: number,
 ): string {
-  const minuteFloor = Math.floor(crossoverTimestamp / 60_000) * 60_000;
-  return `${coinId}::${signalType}::${timeframe}::${minuteFloor}`;
+  const floorMs = CANDLE_FLOOR_MS[timeframe] ?? 60_000;
+  const tsFloor = Math.floor(crossoverTimestamp / floorMs) * floorMs;
+  return `${coinId}::${signalType}::${timeframe}::${tsFloor}`;
 }
 
 // ─── Write ────────────────────────────────────────────────────────────────────
@@ -273,6 +302,31 @@ export function upsertSignals(
 
 // ─── Read ─────────────────────────────────────────────────────────────────────
 
+function buildWhere(
+  opts: {
+    source?: string; timeframe?: string; signalType?: string;
+    minScore?: number; fromTs?: number; toTs?: number; search?: string;
+  },
+  params: Record<string, string | number>,
+  tableAlias = "",
+): string {
+  const p = tableAlias ? `${tableAlias}.` : "";
+  let where = "1=1";
+  if (opts.search) {
+    where += ` AND (${p}symbol LIKE @search OR ${p}name LIKE @search OR ${p}signal_type LIKE @search)`;
+    params.search = `%${opts.search}%`;
+  }
+  if (opts.source)    { where += ` AND ${p}source = @source`;         params.source    = opts.source; }
+  if (opts.timeframe) { where += ` AND ${p}timeframe = @timeframe`;   params.timeframe = opts.timeframe; }
+  if (opts.signalType){ where += ` AND ${p}signal_type = @signalType`; params.signalType = opts.signalType; }
+  if (opts.minScore != null && opts.minScore > 0) {
+    where += ` AND ${p}score >= @minScore`; params.minScore = opts.minScore;
+  }
+  if (opts.fromTs != null) { where += ` AND ${p}crossover_timestamp >= @fromTs`; params.fromTs = opts.fromTs; }
+  if (opts.toTs   != null) { where += ` AND ${p}crossover_timestamp <= @toTs`;   params.toTs   = opts.toTs; }
+  return where;
+}
+
 export function querySignals(opts: {
   source?: string;
   timeframe?: string;
@@ -284,51 +338,34 @@ export function querySignals(opts: {
   search?: string;
   limit?: number;
   offset?: number;
+  latestPerCoin?: boolean;
 } = {}): DbSignal[] {
   const db = getDb();
   const params: Record<string, string | number> = {};
-  let sql = "SELECT * FROM signals WHERE 1=1";
 
-  if (opts.search) {
-    sql += " AND (symbol LIKE @search OR name LIKE @search OR signal_type LIKE @search)";
-    params.search = `%${opts.search}%`;
-  }
+  let sql: string;
 
-  if (opts.source) {
-    sql += " AND source = @source";
-    params.source = opts.source;
-  }
-  if (opts.timeframe) {
-    sql += " AND timeframe = @timeframe";
-    params.timeframe = opts.timeframe;
-  }
-  if (opts.signalType) {
-    sql += " AND signal_type = @signalType";
-    params.signalType = opts.signalType;
-  }
-  if (opts.minScore != null && opts.minScore > 0) {
-    sql += " AND score >= @minScore";
-    params.minScore = opts.minScore;
-  }
-  if (opts.maxScore != null && opts.maxScore > 0) {
-    sql += " AND score <= @maxScore";
-    params.maxScore = opts.maxScore;
-  }
-  if (opts.fromTs != null) {
-    sql += " AND crossover_timestamp >= @fromTs";
-    params.fromTs = opts.fromTs;
-  }
-  if (opts.toTs != null) {
-    sql += " AND crossover_timestamp <= @toTs";
-    params.toTs = opts.toTs;
+  if (opts.latestPerCoin) {
+    // Return only the most-recent signal per coin (by crossover_timestamp)
+    const where = buildWhere(opts, params, "s");
+    sql = `
+      SELECT s.* FROM signals s
+      INNER JOIN (
+        SELECT coin_id, MAX(crossover_timestamp) AS max_ts
+        FROM signals
+        WHERE ${where}
+        GROUP BY coin_id
+      ) latest ON s.coin_id = latest.coin_id AND s.crossover_timestamp = latest.max_ts
+      ORDER BY s.crossover_timestamp DESC
+    `;
+  } else {
+    const where = buildWhere(opts, params);
+    sql = `SELECT * FROM signals WHERE ${where} ORDER BY crossover_timestamp DESC`;
   }
 
-  sql += " ORDER BY crossover_timestamp DESC";
   if (opts.limit != null && opts.limit !== -1) {
     sql += ` LIMIT ${opts.limit}`;
-    if (opts.offset != null && opts.offset > 0) {
-      sql += ` OFFSET ${opts.offset}`;
-    }
+    if (opts.offset != null && opts.offset > 0) sql += ` OFFSET ${opts.offset}`;
   }
 
   return db.prepare(sql).all(params) as DbSignal[];
@@ -359,6 +396,30 @@ export function getSignalCount(source?: string): number {
     ).c;
   }
   return (db.prepare("SELECT COUNT(*) as c FROM signals").get() as { c: number }).c;
+}
+
+/** Fast filtered count — avoids fetching all rows just for pagination total */
+export function countSignals(opts: {
+  source?: string;
+  timeframe?: string;
+  signalType?: string;
+  minScore?: number;
+  fromTs?: number;
+  toTs?: number;
+  search?: string;
+  latestPerCoin?: boolean;
+} = {}): number {
+  const db = getDb();
+  const params: Record<string, string | number> = {};
+
+  if (opts.latestPerCoin) {
+    const where = buildWhere(opts, params);
+    const sql = `SELECT COUNT(DISTINCT coin_id) as c FROM signals WHERE ${where}`;
+    return (db.prepare(sql).get(params) as { c: number }).c;
+  }
+
+  const where = buildWhere(opts, params);
+  return (db.prepare(`SELECT COUNT(*) as c FROM signals WHERE ${where}`).get(params) as { c: number }).c;
 }
 
 // ─── CSV ─────────────────────────────────────────────────────────────────────
