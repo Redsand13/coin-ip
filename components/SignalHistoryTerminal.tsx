@@ -30,7 +30,7 @@ import {
 } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { getDbSignalsAction, syncAllTimeframesAction } from "@/app/actions";
+import { getDbSignalsAction, syncAllTimeframesAction, verifyHistoryKeyAction } from "@/app/actions";
 import type { DbSignal } from "@/lib/db";
 
 const ITEMS_PER_PAGE = 50;
@@ -54,17 +54,15 @@ export default function SignalHistoryTerminal() {
   const [toDate, setToDate] = useState("");
   const [latestPerCoin, setLatestPerCoin] = useState(false);
 
-  const SECRET_KEY = "Alpha5!Storm8@Cloud3#Fire";
-
   useEffect(() => {
-    // Check session storage for existing auth
     const auth = sessionStorage.getItem("history_auth");
     if (auth === "true") setIsAuthenticated(true);
   }, []);
 
-  const handleAuth = (e: React.FormEvent) => {
+  const handleAuth = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (password === SECRET_KEY) {
+    const ok = await verifyHistoryKeyAction(password);
+    if (ok) {
       setIsAuthenticated(true);
       sessionStorage.setItem("history_auth", "true");
       setPassError(false);
@@ -121,15 +119,22 @@ export default function SignalHistoryTerminal() {
   // Reset to page 1 and fetch when filters change
   useEffect(() => {
     if (!isAuthenticated) return;
+    skipPageFetchRef.current = true; // prevent the page-change effect from double-fetching
     setCurrentPage(1);
     fetchSignals(1);
   }, [isAuthenticated, source, timeframe, minScore, fromDate, toDate, search, latestPerCoin]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Fetch when page changes
+  // Fetch when user navigates to a different page (not when filters reset it)
   useEffect(() => {
     if (!isAuthenticated) return;
+    if (skipPageFetchRef.current) {
+      skipPageFetchRef.current = false;
+      return;
+    }
     fetchSignals(currentPage);
   }, [currentPage]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const skipPageFetchRef = useRef(false);
 
   // Debounce search input — only fires DB query 400ms after user stops typing
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -404,8 +409,7 @@ export default function SignalHistoryTerminal() {
                 <TableHead className="text-[10px] font-black uppercase">Direction</TableHead>
                 <TableHead className="text-[10px] font-black uppercase">Source & TF</TableHead>
                 <TableHead className="text-[10px] font-black uppercase text-right flex items-center justify-end gap-1.5 h-[52px]">
-                   Entry Price
-                   <Lock size={10} className="text-primary/50" />
+                   Price
                 </TableHead>
                 <TableHead className="text-[10px] font-black uppercase">Detected At</TableHead>
                 <TableHead className="text-[10px] font-black uppercase text-center">Score</TableHead>

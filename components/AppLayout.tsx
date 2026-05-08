@@ -75,7 +75,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
                   : "text-muted-foreground hover:text-foreground"
               )}
             >
-              Binance Market
+              EMA 3 Cross
             </Button>
           </Link>
           <Link href="/ict">
@@ -180,7 +180,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
           <div className={cn("p-1.5 rounded-lg transition-colors", pathname === "/binance" ? "bg-primary/10 text-primary" : "text-muted-foreground")}>
             <TrendingUp size={20} className={cn(pathname === "/binance" && "fill-current")} />
           </div>
-          <span className={cn("text-[10px] font-bold", pathname === "/binance" ? "text-primary" : "text-muted-foreground")}>Binance Market</span>
+          <span className={cn("text-[10px] font-bold", pathname === "/binance" ? "text-primary" : "text-muted-foreground")}>EMA 3 Cross</span>
         </Link>
 
         <Link href="/ict" className="flex flex-col items-center gap-1 w-full h-full justify-center">

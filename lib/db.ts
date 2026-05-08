@@ -488,7 +488,10 @@ export function deletePushSubscription(endpoint: string) {
 
 export function getPushSubscriptionsForPage(page: string): PushSubscriptionRow[] {
   const db = getDb();
-  return db.prepare(`SELECT * FROM push_subscriptions`).all() as PushSubscriptionRow[];
+  return db.prepare(
+    `SELECT * FROM push_subscriptions
+     WHERE EXISTS (SELECT 1 FROM json_each(pages) WHERE value = @page)`,
+  ).all({ page }) as PushSubscriptionRow[];
 }
 
 // ─── CSV ──────────────────────────────────────────────────────────────────────

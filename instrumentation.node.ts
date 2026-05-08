@@ -1,30 +1,30 @@
 /**
  * Node.js-only background signal scanner.
- * Imported exclusively from instrumentation.ts under NEXT_RUNTIME === "nodejs",
- * so the Edge bundler never traces these Node.js-only imports.
+ * Imported exclusively from instrumentation.ts under NEXT_RUNTIME === "nodejs".
  *
- * Stores all sources × all timeframes to SQLite every 1 minute,
- * and sends Web Push notifications for every brand-new signal —
- * even when no browser tab is open.
+ * Runs every 30 seconds.
+ * - Binance: all 6 timeframes scanned sequentially (WS-backed klines = fast, ~1-3s total)
+ * - CoinGecko + ICT: run concurrently with the Binance loop (independent APIs)
+ * Sends Web Push notifications for every brand-new signal.
  */
 
-export {}; // marks this as a module so TypeScript accepts the dynamic import()
+export {};
 
 const ALL_TIMEFRAMES = ["5m", "15m", "30m", "1h", "4h", "1d"];
-const SCAN_INTERVAL_MS = 60_000; // every 1 minute
-const INITIAL_DELAY_MS  = 20_000;    // wait 20s after server start before first scan
+const SCAN_INTERVAL_MS = 30_000;  // every 30 seconds
+const INITIAL_DELAY_MS = 10_000;  // wait 10s after server start
 
-// Track signal IDs we've already sent push notifications for — prevents duplicate alerts
-// across scanner cycles. Capped at 2000 entries to avoid unbounded growth.
 const sentPushIds = new Set<string>();
 const MAX_SENT_IDS = 2000;
 
 function addSentId(id: string) {
   sentPushIds.add(id);
   if (sentPushIds.size > MAX_SENT_IDS) {
-    // Remove oldest entries (Set preserves insertion order)
+    // Trim oldest entries back to 80% capacity so we don't thrash on every add
+    const target = Math.floor(MAX_SENT_IDS * 0.8);
+    const toDelete = sentPushIds.size - target;
     const iter = sentPushIds.values();
-    for (let i = 0; i < 200; i++) {
+    for (let i = 0; i < toDelete; i++) {
       const { value, done } = iter.next();
       if (done) break;
       sentPushIds.delete(value);
@@ -32,23 +32,23 @@ function addSentId(id: string) {
   }
 }
 
-console.log("📡 [BG] Signal scanner registered — will start in 20s");
+console.log("📡 [BG] Signal scanner registered — will start in 10s");
 
 setTimeout(() => {
-  runScan(); // first scan
+  runScan();
   setInterval(runScan, SCAN_INTERVAL_MS);
 }, INITIAL_DELAY_MS);
 
-let scanning = false; // lock — prevents overlapping scans
+let scanning = false;
 
 async function runScan() {
   if (scanning) {
-    console.log("⏭️ [BG] Previous scan still running — skipping this cycle");
+    console.log("⏭️ [BG] Previous scan still running — skipping");
     return;
   }
   scanning = true;
   const start = Date.now();
-  console.log("🔄 [BG] Background scan started — all sources × all timeframes");
+  console.log("🔄 [BG] Background scan started");
 
   try {
     const [
@@ -67,62 +67,75 @@ async function runScan() {
 
     let totalNew = 0;
 
-    // ── Binance — sequential to avoid 418 IP ban ────────────────────────────
-    for (const tf of ALL_TIMEFRAMES) {
-      try {
-        const sigs = await getBinanceFuturesSignals(tf);
-        if (sigs.length > 0) {
-          const n = upsertSignals(sigs, "binance");
-          if (n > 0) {
-            console.log(`  ✅ [BG] Binance ${tf}: +${n} new`);
-            totalNew += n;
+    // ── Run sources respecting Binance rate limits ──────────────────────────
+    // CoinGecko uses a completely separate API → runs in parallel with Binance.
+    // ICT has its own fapiFetch hitting the same Binance Futures quota →
+    // runs AFTER Binance finishes to avoid 429 clashes.
 
-            // Send push for signals not yet notified
-            const fresh = sigs.filter(s => {
-              const id = buildSignalId(s.coinId, s.signalType, s.timeframe, s.crossoverTimestamp);
-              if (sentPushIds.has(id)) return false;
-              addSentId(id);
-              return true;
-            });
+    // Binance + CoinGecko in parallel
+    await Promise.allSettled([
 
-            for (const s of fresh.slice(0, 5)) { // cap at 5 pushes per source per cycle
-              const isBull = s.signalType === "BUY";
-              await sendPushToPage("Binance Futures", {
-                title: `${isBull ? "🟢" : "🔴"} ${s.symbol} ${s.signalType}  |  Score ${s.score}`,
-                body: [
-                  `📊 ${s.name}`,
-                  `⏱  ${tf.toUpperCase()} · Binance Futures`,
-                  s.signalName ? `🔷 ${s.signalName}` : "",
-                  `⚡ Score: ${s.score}/100`,
-                ].filter(Boolean).join("\n"),
-                icon: s.image || "/favicon.ico",
-                url: "/binance",
-              }).catch(() => {});
+      // ── Binance — sequential TFs (WS-backed = fast after first seed) ────────
+      (async () => {
+        for (const tf of ALL_TIMEFRAMES) {
+          try {
+            const sigs = await getBinanceFuturesSignals(tf);
+            if (sigs.length > 0) {
+              const n = upsertSignals(sigs, "binance");
+              if (n > 0) {
+                console.log(`  ✅ [BG] Binance ${tf}: +${n} new`);
+                totalNew += n;
+
+                const fresh = sigs.filter(s => {
+                  const id = buildSignalId(s.coinId, s.signalType, s.timeframe, s.crossoverTimestamp);
+                  if (sentPushIds.has(id)) return false;
+                  addSentId(id);
+                  return true;
+                });
+
+                for (const s of fresh.slice(0, 5)) {
+                  const isBull = s.signalType === "BUY";
+                  await sendPushToPage("Binance Futures", {
+                    title: `${isBull ? "🟢" : "🔴"} ${s.symbol} ${s.signalType}  |  Score ${s.score}`,
+                    body: [
+                      `📊 ${s.name}`,
+                      `⏱  ${tf.toUpperCase()} · Binance Futures`,
+                      s.signalName ? `🔷 ${s.signalName}` : "",
+                      `⚡ Score: ${s.score}/100`,
+                    ].filter(Boolean).join("\n"),
+                    icon: s.image || "/favicon.ico",
+                    url: "/binance",
+                  }).catch(() => {});
+                }
+              }
             }
+          } catch (e) {
+            console.warn(`  ⚠️ [BG] Binance ${tf} failed:`, (e as Error).message);
+          }
+          // 300ms gap — enough when WS-backed; REST batches have their own 800ms delay
+          await delay(300);
+        }
+      })(),
+
+      // ── CoinGecko — completely independent API, safe to run in parallel ──────
+      (async () => {
+        for (const tf of ALL_TIMEFRAMES) {
+          try {
+            const sigs = await calculateCoingeckoSignals(tf);
+            if (sigs.length > 0) {
+              const n = upsertSignals(sigs, "coingecko");
+              if (n > 0) console.log(`  ✅ [BG] CoinGecko ${tf}: +${n} new`);
+              totalNew += n;
+            }
+          } catch (e) {
+            console.warn(`  ⚠️ [BG] CoinGecko ${tf} failed:`, (e as Error).message);
           }
         }
-      } catch (e) {
-        console.warn(`  ⚠️ [BG] Binance ${tf} failed:`, (e as Error).message);
-      }
-      // 1200ms gap between timeframes — respect Binance rate limits
-      await delay(1200);
-    }
+      })(),
 
-    // ── CoinGecko — sequential (API has its own rate limits) ────────────────
-    for (const tf of ALL_TIMEFRAMES) {
-      try {
-        const sigs = await calculateCoingeckoSignals(tf);
-        if (sigs.length > 0) {
-          const n = upsertSignals(sigs, "coingecko");
-          if (n > 0) console.log(`  ✅ [BG] CoinGecko ${tf}: +${n} new`);
-          totalNew += n;
-        }
-      } catch (e) {
-        console.warn(`  ⚠️ [BG] CoinGecko ${tf} failed:`, (e as Error).message);
-      }
-    }
+    ]);
 
-    // ── ICT — sequential (hits Binance Futures too) ──────────────────────────
+    // ── ICT — sequential TFs AFTER Binance (shares Binance Futures rate limit) ─
     for (const tf of ALL_TIMEFRAMES) {
       try {
         const sigs = await getICTSignals(tf);
@@ -141,7 +154,6 @@ async function runScan() {
             console.log(`  ✅ [BG] ICT ${tf}: +${n} new`);
             totalNew += n;
 
-            // Send push for signals not yet notified
             const fresh = sigs.filter(s => {
               const id = buildSignalId(s.coinId, s.signalType, s.timeframe, s.sweepTimestamp);
               if (sentPushIds.has(id)) return false;
@@ -149,7 +161,7 @@ async function runScan() {
               return true;
             });
 
-            for (const s of fresh.slice(0, 5)) { // cap at 5 pushes per source per cycle
+            for (const s of fresh.slice(0, 5)) {
               const isBull = s.signalType === "LONG";
               await sendPushToPage("ICT / SMC", {
                 title: `${isBull ? "🟢" : "🔴"} ${s.symbol} ${s.signalType}  |  Score ${s.score}`,
@@ -168,11 +180,11 @@ async function runScan() {
       } catch (e) {
         console.warn(`  ⚠️ [BG] ICT ${tf} failed:`, (e as Error).message);
       }
-      await delay(1200);
+      await delay(300);
     }
 
     const elapsed = ((Date.now() - start) / 1000).toFixed(1);
-    console.log(`✅ [BG] Scan complete in ${elapsed}s — ${totalNew} new signals stored`);
+    console.log(`✅ [BG] Scan complete in ${elapsed}s — ${totalNew} new signals`);
   } catch (err) {
     console.error("❌ [BG] Scan error:", err);
   } finally {

@@ -16,7 +16,9 @@ const FAPI    = "https://fapi.binance.com/fapi/v1";
 // 1499 closed candles → 1400 bars after seed → matches TradingView exactly.
 const BUFFER_SIZE        = 1500;
 const MAX_STREAMS_PER_WS = 200; // Binance hard limit per connection
-const SEED_CONCURRENCY   = 5;   // max simultaneous REST kline seeds
+// Keep concurrency low: /klines?limit=1500 costs 10 weight each.
+// 3 concurrent × 10 weight = 30 weight/batch, leaving headroom under 40/sec limit.
+const SEED_CONCURRENCY   = 3;
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
@@ -130,6 +132,20 @@ class BinanceWSManager {
 
   getAllTickers(): MiniTicker[] { return Array.from(this.tickers.values()); }
   getTicker(s: string): MiniTicker | undefined { return this.tickers.get(s); }
+  isSeeded(symbol: string, interval: string): boolean { return this.seeded.has(`${symbol}:${interval}`); }
+
+  /**
+   * Inject already-fetched klines into the WS buffer and subscribe to the live
+   * stream — no extra REST call needed. Call this after a REST kline fetch so the
+   * WS manager stays up-to-date from the next candle close onward.
+   */
+  seedFromData(symbol: string, interval: string, klines: BinanceKline[]): void {
+    const key = `${symbol}:${interval}`;
+    if (this.seeded.has(key) || this.seeding.has(key)) return;
+    this.klines.set(key, klines.slice(-BUFFER_SIZE));
+    this.seeded.add(key);
+    this.scheduleStream(`${symbol.toLowerCase()}@kline_${interval}`);
+  }
 
   // ── Kline WebSocket ─────────────────────────────────────────────────────────
 
@@ -178,6 +194,7 @@ class BinanceWSManager {
 
         ws.onclose = (evt) => {
           console.warn(`⚠️ [WS] kline WS closed (code=${evt.code}) — reconnecting in 5s`);
+          this.klineConns = this.klineConns.filter(c => c !== ws);
           setTimeout(connect, 5_000);
         };
 
@@ -231,6 +248,8 @@ class BinanceWSManager {
       this.seeded.add(key);
       this.scheduleStream(`${symbol.toLowerCase()}@kline_${interval}`);
 
+      // Small inter-seed pause so concurrent seeds don't spike weight
+      await delay(200);
       console.log(`🌱 [WS] Seeded ${closed.length} closed candles for ${key}`);
       return closed.slice(-limit);
     } catch (e) {
@@ -242,10 +261,6 @@ class BinanceWSManager {
     }
   }
 
-  invalidate(symbol: string, interval: string) {
-    const key = `${symbol}:${interval}`;
-    this.seeded.delete(key);
-  }
 }
 
 function delay(ms: number) { return new Promise<void>(r => setTimeout(r, ms)); }

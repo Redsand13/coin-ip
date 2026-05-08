@@ -13,19 +13,28 @@ const ALL_TIMEFRAMES = ["5m", "15m", "30m", "1h", "4h", "1d"];
  */
 export async function getBinanceFuturesSignalsAction(timeframe: string = "1h") {
   try {
-    const { getBinanceFuturesSignals } = await import("@/lib/services/binance");
+    const { getBinanceFuturesSignals, isRateLimited, getCachedSignals } = await import("@/lib/services/binance");
+
+    // When rate-limited: serve cached signals or fall back to DB — never hit REST
+    if (isRateLimited()) {
+      const cached = getCachedSignals(timeframe);
+      if (cached) return cached;
+      console.warn(`⚠️ [BF] Rate-limited — serving DB fallback for ${timeframe}`);
+      return dbSignalsToMASignals(querySignals({ source: "binance", timeframe, limit: 100 }));
+    }
 
     const tfsToScan = timeframe === "all" ? ALL_TIMEFRAMES : [timeframe];
     const allResults: Awaited<ReturnType<typeof getBinanceFuturesSignals>>[] = [];
 
-    // Scan timeframes sequentially — parallel would trigger Binance 418 IP ban
+    // Scan timeframes sequentially — parallel would spike Binance rate-limit weight
     for (const tf of tfsToScan) {
       try {
         const sigs = await getBinanceFuturesSignals(tf);
         allResults.push(sigs);
       } catch (err) {
         console.warn(`⚠️ [BF] Scan failed for ${tf}:`, err);
-        allResults.push([]);
+        // Fall back to DB for this TF so the UI still has data
+        allResults.push(dbSignalsToMASignals(querySignals({ source: "binance", timeframe: tf, limit: 100 })));
       }
     }
 
@@ -47,7 +56,6 @@ export async function getBinanceFuturesSignalsAction(timeframe: string = "1h") {
         const inserted = upsertSignals(allSignals, "binance");
         if (inserted > 0) {
           console.log(`💾 [DB] Saved ${inserted} new Binance signals (${timeframe})`);
-          // Send background push to subscribers
           const top = allSignals.slice(0, 3);
           const isBull = top[0]?.signalType === "BUY";
           const emoji = isBull ? "🟢" : "🔴";
@@ -69,6 +77,24 @@ export async function getBinanceFuturesSignalsAction(timeframe: string = "1h") {
     console.error("Error fetching Binance signals:", error);
     return [];
   }
+}
+
+/** Convert DB rows back to MASignal shape so the terminal can render them. */
+function dbSignalsToMASignals(rows: DbSignal[]) {
+  return rows.map(r => ({
+    coinId: r.coin_id, symbol: r.symbol, name: r.name, image: r.image,
+    signalType: r.signal_type as "BUY" | "SELL",
+    signalName: r.signal_name, timeframe: r.timeframe, score: r.score,
+    price: r.entry_price, currentPrice: r.entry_price,
+    entryPrice: r.entry_price, stopLoss: r.stop_loss, takeProfit: r.take_profit,
+    change1h: r.change1h, change24h: r.change24h, change7d: 0,
+    volume24h: r.volume24h, marketCap: r.market_cap,
+    timestamp: r.detected_at, crossoverTimestamp: r.crossover_timestamp,
+    candlesAgo: r.candles_ago, volatility: r.volatility,
+    formula: r.formula, ema7: r.ema7, ema25: r.ema25, ema99: r.ema99,
+    ema7Prev: 0, ema99Prev: 0,
+    crossoverStrength: r.crossover_strength,
+  }));
 }
 
 /**
@@ -273,10 +299,10 @@ export async function syncAllTimeframesAction(): Promise<{ binance: number; coin
       try {
         const sigs = await getBinanceFuturesSignals(tf);
         if (sigs.length > 0) binanceCount += upsertSignals(sigs, "binance");
-      } catch { /* skip failed TF */ }
+      } catch (err) { console.warn(`⚠️ [Sync] Binance ${tf} failed:`, (err as Error).message); }
       await new Promise(r => setTimeout(r, 500)); // respect rate limits
     }
-  } catch { /* ignore */ }
+  } catch (err) { console.error("❌ [Sync] Binance import failed:", err); }
 
   // CoinGecko — all timeframes
   try {
@@ -284,9 +310,9 @@ export async function syncAllTimeframesAction(): Promise<{ binance: number; coin
       try {
         const sigs = await calculateCoingeckoSignals(tf);
         if (sigs.length > 0) coingeckoCount += upsertSignals(sigs, "coingecko");
-      } catch { /* skip */ }
+      } catch (err) { console.warn(`⚠️ [Sync] CoinGecko ${tf} failed:`, (err as Error).message); }
     }
-  } catch { /* ignore */ }
+  } catch (err) { console.error("❌ [Sync] CoinGecko failed:", err); }
 
   // ICT — all timeframes
   try {
@@ -305,12 +331,24 @@ export async function syncAllTimeframesAction(): Promise<{ binance: number; coin
           }));
           ictCount += upsertSignals(mapped, "ict");
         }
-      } catch { /* skip */ }
+      } catch (err) { console.warn(`⚠️ [Sync] ICT ${tf} failed:`, (err as Error).message); }
       await new Promise(r => setTimeout(r, 500));
     }
-  } catch { /* ignore */ }
+  } catch (err) { console.error("❌ [Sync] ICT failed:", err); }
 
   return { binance: binanceCount, coingecko: coingeckoCount, ict: ictCount };
+}
+
+/**
+ * Server-side auth check for the Signal History page.
+ * Key lives only in .env.local — never shipped to the client bundle.
+ * The artificial delay slows brute-force attempts.
+ */
+export async function verifyHistoryKeyAction(password: string): Promise<boolean> {
+  await new Promise(r => setTimeout(r, 400));
+  const key = process.env.SIGNAL_HISTORY_KEY;
+  if (!key) { console.warn("⚠️ SIGNAL_HISTORY_KEY not set in .env.local"); return false; }
+  return password.trim() === key.trim();
 }
 
 /**
