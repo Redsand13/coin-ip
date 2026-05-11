@@ -18,6 +18,8 @@ export interface EFSignalEntry {
     name: string;
     image: string;
     signalType: "BUY" | "SELL";
+    signalName?: string;
+    signalKind?: "TRIPLE_ALIGN" | "PULLBACK";
     timeframe: string;
     score: number;
     entryPrice: number;
@@ -91,6 +93,8 @@ function toEntry(sig: RawSignal): EFSignalEntry {
         name: sig.name ?? sig.symbol,
         image: sig.image ?? "",
         signalType: sig.signalType,
+        signalName: sig.signalName ?? undefined,
+        signalKind: sig.signalKind ?? inferKind(sig.signalName),
         timeframe: tf,
         score: sig.score ?? 0,
         entryPrice: sig.price ?? sig.entryPrice ?? 0,
@@ -102,6 +106,13 @@ function toEntry(sig: RawSignal): EFSignalEntry {
         volatility: sig.volatility ?? 0,
         volatilityTooltip: sig.volatilityTooltip,
     };
+}
+
+function inferKind(name?: string): EFSignalEntry["signalKind"] {
+    if (!name) return undefined;
+    if (name.includes("Aligned"))  return "TRIPLE_ALIGN";
+    if (name.includes("PULLBACK")) return "PULLBACK";
+    return undefined;
 }
 
 function seedFromRaw(raw: RawSignal[]): EFSignalEntry[] {
@@ -152,6 +163,22 @@ const ColTip = ({ title, tip, right }: { title: string; tip: string; right?: boo
     </div>
 );
 
+const KIND_META: Record<NonNullable<EFSignalEntry["signalKind"]>, { label: string; cls: string }> = {
+    TRIPLE_ALIGN: { label: "🔥 ALIGNED",  cls: "bg-violet-500/15 text-violet-400 border-violet-500/20" },
+    PULLBACK:     { label: "🎯 PULLBACK", cls: "bg-emerald-500/15 text-emerald-400 border-emerald-500/20" },
+};
+
+const KindBadge = memo(({ kind }: { kind: string }) => {
+    const m = KIND_META[kind as "TRIPLE_ALIGN" | "PULLBACK"];
+    if (!m) return null;
+    return (
+        <span className={cn("text-[9px] font-bold px-1.5 py-0.5 rounded border whitespace-nowrap", m.cls)}>
+            {m.label}
+        </span>
+    );
+});
+KindBadge.displayName = "KindBadge";
+
 const SignalRow = memo(({ entry, index, isNew }: { entry: EFSignalEntry; index: number; isNew: boolean }) => {
     const isBuy = entry.signalType === "BUY";
     const priceMoved = entry.currentPrice > 0 && entry.currentPrice !== entry.entryPrice;
@@ -183,10 +210,13 @@ const SignalRow = memo(({ entry, index, isNew }: { entry: EFSignalEntry; index: 
 
             <TableCell>
                 <div className="flex flex-col gap-1 items-start">
-                    <Badge className={cn("font-bold text-[10px] px-2 py-0.5 uppercase border-0",
-                        isBuy ? "bg-[#0ecb81]/15 text-[#0ecb81]" : "bg-[#f6465d]/15 text-[#f6465d]")}>
-                        {entry.signalType}
-                    </Badge>
+                    <div className="flex items-center gap-1 flex-wrap">
+                        <Badge className={cn("font-bold text-[10px] px-2 py-0.5 uppercase border-0",
+                            isBuy ? "bg-[#0ecb81]/15 text-[#0ecb81]" : "bg-[#f6465d]/15 text-[#f6465d]")}>
+                            {entry.signalType}
+                        </Badge>
+                        {entry.signalKind && <KindBadge kind={entry.signalKind} />}
+                    </div>
                     <span className="text-[10px] text-muted-foreground font-mono bg-muted/50 px-1.5 py-0.5 rounded">{time}</span>
                     <span className="text-[9px] font-bold uppercase text-primary/70 bg-primary/10 px-1.5 py-0.5 rounded">{entry.timeframe}</span>
                 </div>
@@ -429,7 +459,9 @@ export default function ExchangeFuturesTerminal({
         return byTf.filter(e => terms.some(t =>
             e.symbol.toLowerCase().includes(t) ||
             e.name.toLowerCase().includes(t) ||
-            e.signalType.toLowerCase() === t
+            e.signalType.toLowerCase() === t ||
+            (e.signalKind ?? "").toLowerCase().includes(t) ||
+            (e.signalName ?? "").toLowerCase().includes(t)
         ));
     }, [entries, deferredSearch, timeframe]);
 
@@ -564,7 +596,7 @@ export default function ExchangeFuturesTerminal({
                     <div className="p-12 text-center">
                         <Activity size={40} className="mx-auto mb-4 text-muted-foreground/30" />
                         <p className="text-sm font-bold text-muted-foreground">No signals yet</p>
-                        <p className="text-[11px] text-muted-foreground/60 mt-1">Scanner runs every 20s · EMA 7/25/99 alignment required</p>
+                        <p className="text-[11px] text-muted-foreground/60 mt-1">Scanner runs every 5s · EMA 7/25/99 · PRE-CROSS → ALIGNED → PULLBACK</p>
                     </div>
                 ) : (
                     <div className="overflow-x-auto">

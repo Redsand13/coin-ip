@@ -72,6 +72,8 @@ class BinanceWSManager {
   private seeded   = new Set<string>();
   private seeding  = new Set<string>();
   private seedSem  = new Semaphore(SEED_CONCURRENCY);
+  // Tracks last candle close timestamp per interval — used to bust the signal cache
+  private lastClose = new Map<string, number>();          // "1h" → epoch ms
 
   private tickerWs: WebSocket | null = null;
   private klineConns: WebSocket[]    = [];
@@ -133,6 +135,7 @@ class BinanceWSManager {
   getAllTickers(): MiniTicker[] { return Array.from(this.tickers.values()); }
   getTicker(s: string): MiniTicker | undefined { return this.tickers.get(s); }
   isSeeded(symbol: string, interval: string): boolean { return this.seeded.has(`${symbol}:${interval}`); }
+  getLastCandleClose(interval: string): number { return this.lastClose.get(interval) ?? 0; }
 
   /**
    * Inject already-fetched klines into the WS buffer and subscribe to the live
@@ -189,6 +192,8 @@ class BinanceWSManager {
 
             buf.push([k.t, k.o, k.h, k.l, k.c, k.v, k.T, k.q, k.n, k.V, k.Q, "0"]);
             if (buf.length > BUFFER_SIZE) buf.shift();
+            // Record close time so the signal cache can be busted immediately
+            this.lastClose.set(k.i, Date.now());
           } catch { /* ignore */ }
         };
 

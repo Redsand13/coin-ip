@@ -48,6 +48,13 @@ async function runScan() {
   }
   scanning = true;
   const start = Date.now();
+  // Watchdog: if the scan takes >3 min something is hung — force-reset the flag
+  const watchdog = setTimeout(() => {
+    if (scanning) {
+      console.warn("⚠️ [BG] Scan watchdog triggered after 3min — resetting scanning flag");
+      scanning = false;
+    }
+  }, 3 * 60_000);
   console.log("🔄 [BG] Background scan started");
 
   try {
@@ -188,6 +195,7 @@ async function runScan() {
   } catch (err) {
     console.error("❌ [BG] Scan error:", err);
   } finally {
+    clearTimeout(watchdog);
     scanning = false;
   }
 }

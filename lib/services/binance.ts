@@ -43,7 +43,10 @@ async function fapiFetch(path: string, _retry = 0): Promise<Response> {
   const now = Date.now();
   if (_rlUntil > now) await new Promise(r => setTimeout(r, _rlUntil - now));
 
-  const res = await fetch(`${FAPI}${path}`, { cache: "no-store" });
+  const res = await fetch(`${FAPI}${path}`, {
+    cache: "no-store",
+    signal: AbortSignal.timeout(15_000), // 15s — prevents zombie fetches that freeze the scanner
+  });
 
   if (res.status === 429) {
     // Soft rate-limit — back off 10 s and retry once
@@ -84,6 +87,11 @@ let tickerFetching: Promise<void> | null = null; // deduplicate concurrent ticke
 // Per-symbol REST kline fallback cache (used until WS seeds the symbol)
 // Capped at MAX_KLINE_CACHE entries to prevent unbounded memory growth.
 const klinesCache = new Map<string, { data: BinanceKline[]; ts: number }>();
+
+// Spot daily data for volatility scoring — refreshed every 5 min per symbol.
+// Prevents Phase-2 enrichment from hammering Binance Spot REST on every 5s scan.
+const spotDailyCache = new Map<string, { data: number[][] | null; ts: number }>();
+const SPOT_DAILY_CACHE_MS = 5 * 60_000;
 const MAX_KLINE_CACHE = 600;
 const KLINE_TTL: Record<string, number> = {
   "5m":  4   * 60_000,
@@ -94,9 +102,9 @@ const KLINE_TTL: Record<string, number> = {
   "1d":  23  * 60 * 60_000,
 };
 
-// 3 min — covers the ~90s full-cycle scan (6 TFs × 15s each) plus buffer.
-// Client polls every 20s and always gets a warm cache hit after the first scan.
-const SIGNALS_CACHE_MS = 3 * 60_000;
+// 5s — every client poll triggers a fresh EMA calculation with the live candle.
+// WS-seeded pairs are pure in-memory (zero REST calls) so 5s is safe.
+const SIGNALS_CACHE_MS = 5_000;
 const TICKER_CACHE_MS  = 4 * 60_000;
 
 const INTERVAL_MS: Record<string, number> = {
@@ -114,7 +122,9 @@ type WSManager = {
   isSeeded: (symbol: string, interval: string) => boolean;
   getKlines: (symbol: string, interval: string, limit?: number) => Promise<BinanceKline[]>;
   getAllTickers: () => { s: string; c: string; P: string; q: string }[];
+  getTicker: (symbol: string) => { c: string } | undefined;
   seedFromData: (symbol: string, interval: string, klines: BinanceKline[]) => void;
+  getLastCandleClose: (interval: string) => number;
 };
 
 // Eagerly initialize via dynamic import at module load time (Node.js only).
@@ -242,34 +252,59 @@ function calculateADX(highs: number[], lows: number[], closes: number[], period 
   return adx;
 }
 
-// ─── Alignment detector ───────────────────────────────────────────────────────
+// ─── EMA signal detector ──────────────────────────────────────────────────────
+// Confirmed signals only — no pre-cross noise:
+//   TRIPLE_ALIGN — EMA7>25>99 (or 99>25>7) confirmed within lookback
+//   PULLBACK     — triple aligned + price retracing to EMA25 (best R:R entry)
 
-function detectTripleEMAAlignment(
-  ema7: number[], ema25: number[], ema99: number[], maxLookback: number,
-): { type: "BUY" | "SELL" | null; candlesAgo: number; index: number } {
-  const len = Math.min(ema7.length, ema25.length, ema99.length);
-  if (len < 100) return { type: null, candlesAgo: -1, index: -1 };
+type EMASignalKind = "TRIPLE_ALIGN" | "PULLBACK";
+
+function detectEMASignal(
+  ema7: number[], ema25: number[], ema99: number[],
+  closes: number[], maxLookback: number,
+): { kind: EMASignalKind | null; type: "BUY" | "SELL" | null; candlesAgo: number; index: number } {
+  const len = Math.min(ema7.length, ema25.length, ema99.length, closes.length);
+  if (len < 100) return { kind: null, type: null, candlesAgo: -1, index: -1 };
 
   const e7 = ema7[len - 1], e25 = ema25[len - 1], e99 = ema99[len - 1];
-  if (!e7 || !e25 || !e99) return { type: null, candlesAgo: -1, index: -1 };
+  const price = closes[len - 1];
+  if (!e7 || !e25 || !e99) return { kind: null, type: null, candlesAgo: -1, index: -1 };
 
-  const isBull = e7 > e25 && e25 > e99;
-  const isBear = e99 > e25 && e25 > e7;
-  if (!isBull && !isBear) return { type: null, candlesAgo: -1, index: -1 };
+  const isTripleBull = e7 > e25 && e25 > e99;
+  const isTripleBear = e99 > e25 && e25 > e7;
 
-  const type: "BUY" | "SELL" = isBull ? "BUY" : "SELL";
-
-  let crossoverIdx = len - 1;
-  for (let i = len - 2; i >= 99; i--) {
-    const a7 = ema7[i], a25 = ema25[i], a99 = ema99[i];
-    if (!a7 || !a25 || !a99) break;
-    const aligned = type === "BUY" ? (a7 > a25 && a25 > a99) : (a99 > a25 && a25 > a7);
-    if (aligned) crossoverIdx = i; else break;
+  // ── PULLBACK: triple aligned + price retracing into EMA25 ─────────────────
+  if (isTripleBull && price >= e25 * 0.995 && price <= e25 * 1.015) {
+    let alignIdx = len - 1;
+    for (let i = len - 2; i >= 99; i--) {
+      if (ema7[i] > ema25[i] && ema25[i] > ema99[i]) alignIdx = i; else break;
+    }
+    return { kind: "PULLBACK", type: "BUY", candlesAgo: len - 1 - alignIdx, index: alignIdx };
+  }
+  if (isTripleBear && price <= e25 * 1.005 && price >= e25 * 0.985) {
+    let alignIdx = len - 1;
+    for (let i = len - 2; i >= 99; i--) {
+      if (ema99[i] > ema25[i] && ema25[i] > ema7[i]) alignIdx = i; else break;
+    }
+    return { kind: "PULLBACK", type: "SELL", candlesAgo: len - 1 - alignIdx, index: alignIdx };
   }
 
-  const candlesAgo = len - 1 - crossoverIdx;
-  if (candlesAgo > maxLookback) return { type: null, candlesAgo: -1, index: -1 };
-  return { type, candlesAgo, index: crossoverIdx };
+  // ── TRIPLE_ALIGN: full alignment within lookback ──────────────────────────
+  if (isTripleBull || isTripleBear) {
+    const type: "BUY" | "SELL" = isTripleBull ? "BUY" : "SELL";
+    let alignIdx = len - 1;
+    for (let i = len - 2; i >= 99; i--) {
+      const aligned = type === "BUY"
+        ? (ema7[i] > ema25[i] && ema25[i] > ema99[i])
+        : (ema99[i] > ema25[i] && ema25[i] > ema7[i]);
+      if (aligned) alignIdx = i; else break;
+    }
+    const candlesAgo = len - 1 - alignIdx;
+    if (candlesAgo <= maxLookback) return { kind: "TRIPLE_ALIGN", type, candlesAgo, index: alignIdx };
+    return { kind: null, type: null, candlesAgo: -1, index: -1 };
+  }
+
+  return { kind: null, type: null, candlesAgo: -1, index: -1 };
 }
 
 // ─── Kline cache helpers ──────────────────────────────────────────────────────
@@ -287,6 +322,7 @@ function setKlineCache(key: string, data: BinanceKline[], ts: number) {
 // from all firing Binance REST requests simultaneously and hitting 429.
 
 const scanInFlight = new Map<string, Promise<MASignal[]>>();
+let _lastTopCoinsFetch = 0;
 
 // ─── Main function ────────────────────────────────────────────────────────────
 
@@ -294,8 +330,14 @@ export function getBinanceFuturesSignals(timeframe = "1h"): Promise<MASignal[]> 
   const now = Date.now();
   const cached = signalsCache.get(timeframe);
   if (cached && now - cached.ts < SIGNALS_CACHE_MS) {
-    console.log(`⚡ [BF] Cached signals for ${timeframe}`);
-    return Promise.resolve(cached.data);
+    // If a candle closed AFTER the last scan, bust the cache immediately so
+    // the crossover is detected on the very next poll — not 5s later.
+    const interval = timeframe === "1d" ? "1d" : timeframe;
+    const lastClose = getWSManager()?.getLastCandleClose(interval) ?? 0;
+    if (lastClose <= cached.ts) {
+      return Promise.resolve(cached.data);
+    }
+    // New candle closed — fall through to fresh scan
   }
   // If another scan is already running for this timeframe, share its result
   const inflight = scanInFlight.get(timeframe);
@@ -312,17 +354,21 @@ async function _scan(timeframe: string): Promise<MASignal[]> {
   try {
     const now = Date.now();
 
-    // Fire-and-forget — metadata enriches names/images but must never block a scan
-    fetchTopCoins().catch(() => {});
+    // Fire-and-forget — metadata enriches names/images but must never block a scan.
+    // Throttled: CoinGecko has a strict rate limit; 5-second scans would hammer it.
+    if (!_lastTopCoinsFetch || now - _lastTopCoinsFetch > 5 * 60_000) {
+      _lastTopCoinsFetch = now;
+      fetchTopCoins().catch(() => {});
+    }
 
     const intervalMap: Record<string, string> = {
       "5m": "5m", "15m": "15m", "30m": "30m", "1h": "1h", "4h": "4h", "1d": "1d",
     };
     const interval = intervalMap[timeframe] ?? "1h";
     const LOOKBACK: Record<string, number> = {
-      "5m": 5, "15m": 5, "30m": 5, "1h": 5, "4h": 5, "1d": 5,
+      "5m": 48, "15m": 32, "30m": 20, "1h": 12, "4h": 8, "1d": 5,
     };
-    const lookback = LOOKBACK[timeframe] ?? 5;
+    const lookback = LOOKBACK[timeframe] ?? 12;
 
     const wsm = getWSManager();
 
@@ -371,7 +417,7 @@ async function _scan(timeframe: string): Promise<MASignal[]> {
       pair: BinanceTicker;
       closes: number[];
       openTimes: number[];
-      alignment: ReturnType<typeof detectTripleEMAAlignment>;
+      alignment: ReturnType<typeof detectEMASignal>;
       ema7Arr: number[];
       ema25Arr: number[];
       ema99Arr: number[];
@@ -440,6 +486,22 @@ async function _scan(timeframe: string): Promise<MASignal[]> {
 
           if (closedKlines.length < 200) return null;
 
+          // Append a synthetic live candle using the real-time WS ticker price.
+          // This lets us detect crossovers mid-candle — no waiting for candle close.
+          // EMA impact: only the final value shifts by livePrice contribution,
+          // so historical EMAs are unaffected.
+          {
+            const livePrice = wsm?.getTicker(pair.symbol)?.c ?? pair.lastPrice;
+            const last = closedKlines[closedKlines.length - 1];
+            const intMs = INTERVAL_MS[interval] ?? 3_600_000;
+            const liveOpen = Number(last[6]) + 1;
+            const liveCandle: BinanceKline = [
+              liveOpen, livePrice, livePrice, livePrice, livePrice,
+              "0", liveOpen + intMs - 1, "0", 0, "0", "0", "0",
+            ];
+            closedKlines = [...closedKlines, liveCandle];
+          }
+
           const closes    = closedKlines.map(k => parseFloat(k[4]));
           const highs     = closedKlines.map(k => parseFloat(k[2]));
           const lows      = closedKlines.map(k => parseFloat(k[3]));
@@ -449,12 +511,9 @@ async function _scan(timeframe: string): Promise<MASignal[]> {
           const ema99Arr  = calculateEMAArray(closes, 99);
           if (ema99Arr.length < 100) return null;
 
-          const alignment = detectTripleEMAAlignment(ema7Arr, ema25Arr, ema99Arr, lookback);
-          if (!alignment.type) return null;
+          const alignment = detectEMASignal(ema7Arr, ema25Arr, ema99Arr, closes, lookback);
+          if (!alignment.kind) return null;
 
-          // ADX < 20 = extreme chop — skip only the flattest markets.
-          // Threshold kept at 20 (not 25) because EMA crossovers fire at trend onset,
-          // before ADX has time to rise. RSI filter removed for the same reason.
           const adx = calculateADX(highs, lows, closes);
           if (adx < 20) return null;
 
@@ -489,12 +548,18 @@ async function _scan(timeframe: string): Promise<MASignal[]> {
           const change24h    = parseFloat(pair.priceChangePercent);
           const quoteVol     = parseFloat(pair.quoteVolume);
 
-          const freshText  = alignment.candlesAgo === 0 ? "(FRESH!)" : `(${alignment.candlesAgo} candle${alignment.candlesAgo > 1 ? "s" : ""} ago)`;
-          const signalName = alignment.type === "BUY"
-            ? `🔥 Bull Align 7>25>99 ${freshText}`
-            : `🔥 Bear Align 99>25>7 ${freshText}`;
+          const freshText = alignment.candlesAgo === 0 ? "(FRESH!)" : `(${alignment.candlesAgo} candle${alignment.candlesAgo > 1 ? "s" : ""} ago)`;
+          const kindLabels: Record<EMASignalKind, [string, string]> = {
+            TRIPLE_ALIGN: ["🔥 Aligned 7>25>99",  "🔥 Aligned 99>25>7"],
+            PULLBACK:     ["🎯 PULLBACK to EMA25", "🎯 PULLBACK to EMA25"],
+          };
+          const [bullLabel, bearLabel] = kindLabels[alignment.kind!];
+          const signalName = `${alignment.type === "BUY" ? bullLabel : bearLabel} ${freshText}`;
 
-          let score = 70;
+          const kindBase: Record<EMASignalKind, number> = {
+            TRIPLE_ALIGN: 70, PULLBACK: 80,
+          };
+          let score = kindBase[alignment.kind!];
           if      (alignment.candlesAgo === 0) score += 15;
           else if (alignment.candlesAgo === 1) score += 10;
           else                                 score += 5;
@@ -510,11 +575,13 @@ async function _scan(timeframe: string): Promise<MASignal[]> {
           if (quoteVol > 500_000_000)   score += 3;
           if (quoteVol > 1_000_000_000) score += 3;
           score = Math.min(Math.max(Math.round(score), 0), 100);
-          if (score < 70) return null;
+          if (score < 60) return null;
 
           const crossoverPrice = closes[alignment.index] ?? currentPrice;
-          const stopLoss   = alignment.type === "BUY"  ? crossoverPrice * 0.95 : crossoverPrice * 1.05;
-          const takeProfit = alignment.type === "BUY"  ? crossoverPrice * 1.10 : crossoverPrice * 0.90;
+          const stopLoss = alignment.type === "BUY"
+            ? (alignment.kind === "PULLBACK" ? ema99Val * 0.98 : crossoverPrice * 0.95)
+            : (alignment.kind === "PULLBACK" ? ema99Val * 1.02 : crossoverPrice * 1.05);
+          const takeProfit = alignment.type === "BUY" ? crossoverPrice * 1.10 : crossoverPrice * 0.90;
 
           let change1h = 0;
           if      (timeframe === "5m"  && closes.length > 12) change1h = ((currentPrice - closes[closes.length - 13]) / closes[closes.length - 13]) * 100;
@@ -522,9 +589,18 @@ async function _scan(timeframe: string): Promise<MASignal[]> {
           else if (timeframe === "30m" && closes.length > 2)  change1h = ((currentPrice - closes[closes.length - 3])  / closes[closes.length - 3])  * 100;
           else if (timeframe === "1h"  && closes.length > 1)  change1h = ((currentPrice - closes[closes.length - 2])  / closes[closes.length - 2])  * 100;
 
-          // Fetch daily volatility + 1d precision in parallel (both are optional enrichments)
+          // Fetch daily volatility — cached 5 min to avoid REST calls on every 5s scan
+          const _spotHit = spotDailyCache.get(pair.symbol);
+          const dailyDataPromise: Promise<number[][] | null> =
+            _spotHit && now - _spotHit.ts < SPOT_DAILY_CACHE_MS
+              ? Promise.resolve(_spotHit.data)
+              : fetchBinanceKlines(pair.symbol, "1d").then(d => {
+                  spotDailyCache.set(pair.symbol, { data: d, ts: Date.now() });
+                  return d;
+                });
+
           const [dailyData, crossoverTimestamp] = await Promise.all([
-            fetchBinanceKlines(pair.symbol, "1d"),
+            dailyDataPromise,
             (async () => {
               let ts = openTimes[alignment.index] ?? (Date.now() - (alignment.candlesAgo + 1) * (INTERVAL_MS[timeframe] ?? 60_000));
               if (timeframe === "1d" && alignment.index > 0) {
