@@ -116,7 +116,6 @@ async def _execute_backtest(run_id: str, params: dict) -> None:
 
             # Aggregate across symbols
             if all_trades:
-                from app.algorithms.backtester import Backtester, BacktestReport
                 import numpy as np
                 pnls = [t.pnl_pct for t in all_trades if t.pnl_pct is not None]
                 wins  = [p for p in pnls if p > 0]

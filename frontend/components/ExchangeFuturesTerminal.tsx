@@ -3,34 +3,18 @@
 import { useState, useEffect, useMemo, useCallback, useRef, memo, useDeferredValue } from "react";
 import { TrendingUp, TrendingDown, RefreshCw, Activity, Calculator, Trophy, HelpCircle, Download } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { pushAlerts, AlertsButton } from "@/components/SignalAlerts";
+import { pushAlerts, AlertsButton, type AlertPage } from "@/components/SignalAlerts";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
+import type { EFSignalEntry } from "@/lib/types/signals";
+import { CoinIcon, symbolToCoinId } from "@/components/CoinIcon";
+import { ScannedAgo } from "@/components/SignalAge";
+import { exportSignalsCsvAction } from "@/app/actions";
 
-// ─── Types ────────────────────────────────────────────────────────────────────
-
-export interface EFSignalEntry {
-    entryId: string;
-    symbol: string;
-    name: string;
-    image: string;
-    signalType: "BUY" | "SELL";
-    signalName?: string;
-    signalKind?: "TRIPLE_ALIGN" | "PULLBACK";
-    timeframe: string;
-    score: number;
-    entryPrice: number;
-    currentPrice: number;
-    crossoverTimestamp: number;
-    change1h: number;
-    change24h: number;
-    volume24h: number;
-    volatility: number;
-    volatilityTooltip?: string;
-}
+export type { EFSignalEntry };
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type RawSignal = Record<string, any>;
@@ -43,11 +27,12 @@ interface EFTerminalProps {
     scanInterval?: number;
     initialData?: RawSignal[];
     fetchAction?: (timeframe?: string) => Promise<RawSignal[] | undefined | null>;
+    alertPage?: AlertPage;
 }
 
 // ─── Storage ──────────────────────────────────────────────────────────────────
 
-const DEFAULT_KEY = "coinpree_ef_signals_v7";
+const DEFAULT_KEY = "coinpree_ef_signals_v10";
 const MAX_STORED = 500;
 
 function loadEntries(key: string): EFSignalEntry[] {
@@ -60,7 +45,8 @@ function loadEntries(key: string): EFSignalEntry[] {
             (e): e is EFSignalEntry =>
                 e && typeof e.entryId === "string" &&
                 typeof e.symbol === "string" &&
-                typeof e.crossoverTimestamp === "number",
+                typeof e.crossoverTimestamp === "number" &&
+                (e.score ?? 0) >= 40,
         );
     } catch { return []; }
 }
@@ -77,9 +63,9 @@ const CANDLE_MS: Record<string, number> = {
     "1h": 3_600_000, "4h": 14_400_000, "1d": 86_400_000,
 };
 
-function buildEntryId(coinId: string, signalType: string, tf: string, ts: number): string {
-    const floor = CANDLE_MS[tf] ?? 60_000;
-    return `${coinId}::${signalType}::${tf}::${Math.floor(ts / floor) * floor}`;
+// One entry per coin+direction+timeframe — new crossovers overwrite old ones.
+function buildEntryId(coinId: string, signalType: string, tf: string): string {
+    return `${coinId}::${signalType}::${tf}`;
 }
 
 function toEntry(sig: RawSignal): EFSignalEntry {
@@ -88,7 +74,7 @@ function toEntry(sig: RawSignal): EFSignalEntry {
     const ts: number = sig.crossoverTimestamp
         ?? (Math.floor(Date.now() / candleMs) * candleMs - ((sig.candlesAgo ?? 0) + 1) * candleMs);
     return {
-        entryId: buildEntryId(sig.coinId ?? sig.symbol, sig.signalType, tf, ts),
+        entryId: buildEntryId(sig.coinId ?? sig.symbol, sig.signalType, tf),
         symbol: sig.symbol,
         name: sig.name ?? sig.symbol,
         image: sig.image ?? "",
@@ -137,6 +123,21 @@ function formatPrice(p: number): string {
     return p.toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
 }
 
+
+// ─── Delay indicator ──────────────────────────────────────────────────────────
+
+function signalDelayLabel(crossoverTimestamp: number, tf: string): { label: string; warn: boolean } | null {
+    const candleMs = CANDLE_MS[tf] ?? 3_600_000;
+    const delaySec = Math.floor((Date.now() - (crossoverTimestamp + candleMs)) / 1000);
+    if (delaySec < candleMs / 1000 * 1.5) return null;
+    const mins = Math.floor(delaySec / 60);
+    const hrs  = Math.floor(mins / 60);
+    return {
+        label: hrs > 0 ? `${hrs}h late` : `${mins}m late`,
+        warn: delaySec >= candleMs / 1000 * 3,
+    };
+}
+
 // ─── Sub-components ───────────────────────────────────────────────────────────
 
 const Pct = memo(({ val }: { val: number }) => {
@@ -179,58 +180,65 @@ const KindBadge = memo(({ kind }: { kind: string }) => {
 });
 KindBadge.displayName = "KindBadge";
 
-const SignalRow = memo(({ entry, index, isNew }: { entry: EFSignalEntry; index: number; isNew: boolean }) => {
+const SignalRow = memo(({ entry, index, isNew }: {
+    entry: EFSignalEntry; index: number; isNew: boolean;
+}) => {
     const isBuy = entry.signalType === "BUY";
     const priceMoved = entry.currentPrice > 0 && entry.currentPrice !== entry.entryPrice;
     const time = new Date(entry.crossoverTimestamp).toLocaleString([], {
         month: "short", day: "numeric", hour: "2-digit", minute: "2-digit",
     });
+    const delay = signalDelayLabel(entry.crossoverTimestamp, entry.timeframe);
 
     return (
         <TableRow className={cn("gecko-table-row group transition-colors", isNew && "animate-pulse bg-primary/5")}>
             <TableCell className="w-10 text-center text-muted-foreground text-[11px] font-bold">{index + 1}</TableCell>
 
-            <TableCell className="min-w-[200px] py-3">
-                <div className="flex items-center gap-3">
-                    <div className="w-8 h-8 rounded-full bg-muted flex-shrink-0 flex items-center justify-center overflow-hidden border border-border">
-                        {entry.image
-                            ? <img src={entry.image} alt={entry.symbol} width={32} height={32} className="w-full h-full object-cover" loading="lazy" decoding="async" />
-                            : <span className="text-[10px] font-bold text-muted-foreground">{entry.symbol.slice(0, 2)}</span>
-                        }
+            <TableCell className="min-w-0">
+                <div className="flex items-center gap-1.5 sm:gap-2">
+                    <div className="w-6 h-6 sm:w-8 sm:h-8 rounded-full bg-muted flex-shrink-0 flex items-center justify-center overflow-hidden border border-border">
+                        <CoinIcon symbol={entry.coinId ?? symbolToCoinId(entry.symbol)} size={28} />
                     </div>
-                    <div>
-                        <div className="flex items-center gap-1.5">
-                            <span className="font-bold text-[14px] text-foreground group-hover:text-primary transition-colors">{entry.symbol}</span>
-                            <Badge variant="outline" className="text-[9px] px-1 py-0 h-4 font-bold border-border/50">#{index + 1}</Badge>
-                        </div>
-                        <span className="text-[11px] text-muted-foreground">{entry.name}</span>
+                    <div className="min-w-0">
+                        <span className="font-bold text-[11px] sm:text-[14px] text-foreground group-hover:text-primary transition-colors truncate block">{entry.symbol}</span>
+                        <span className="text-[9px] sm:text-[10px] text-muted-foreground hidden sm:block">{entry.name}</span>
                     </div>
                 </div>
             </TableCell>
 
-            <TableCell>
-                <div className="flex flex-col gap-1 items-start">
+            <TableCell className="min-w-0">
+                <div className="flex flex-col gap-0.5 sm:gap-1 items-start">
                     <div className="flex items-center gap-1 flex-wrap">
-                        <Badge className={cn("font-bold text-[10px] px-2 py-0.5 uppercase border-0",
+                        <Badge className={cn("font-bold text-[9px] sm:text-[10px] px-1.5 sm:px-2 py-0.5 uppercase border-0",
                             isBuy ? "bg-[#0ecb81]/15 text-[#0ecb81]" : "bg-[#f6465d]/15 text-[#f6465d]")}>
-                            {entry.signalType}
+                            {isBuy ? "BULL" : "BEAR"}
                         </Badge>
                         {entry.signalKind && <KindBadge kind={entry.signalKind} />}
                     </div>
-                    <span className="text-[10px] text-muted-foreground font-mono bg-muted/50 px-1.5 py-0.5 rounded">{time}</span>
-                    <span className="text-[9px] font-bold uppercase text-primary/70 bg-primary/10 px-1.5 py-0.5 rounded">{entry.timeframe}</span>
+                    <div className="hidden sm:flex items-center gap-1 flex-wrap">
+                        <span className="text-[10px] text-muted-foreground font-mono bg-muted/50 px-1.5 py-0.5 rounded" suppressHydrationWarning>{time}</span>
+                        {delay && (
+                            <span suppressHydrationWarning className={cn(
+                                "text-[9px] font-bold px-1.5 py-0.5 rounded",
+                                delay.warn ? "bg-orange-500/15 text-orange-400" : "bg-muted text-muted-foreground",
+                            )}>
+                                {delay.warn ? "⚠ " : ""}{delay.label}
+                            </span>
+                        )}
+                    </div>
+                    <span className="text-[9px] font-bold uppercase text-primary/70 bg-primary/10 px-1 sm:px-1.5 py-0.5 rounded">{entry.timeframe}</span>
                 </div>
             </TableCell>
 
             <TableCell>
                 <div className="flex items-center gap-1.5">
-                    <div className={cn("w-12 h-12 rounded-lg flex items-center justify-center font-bold text-lg border-2",
+                    <div className={cn("w-9 h-9 sm:w-11 sm:h-11 rounded-lg flex items-center justify-center font-bold text-[13px] sm:text-[15px] border-2",
                         entry.score >= 70 ? "bg-[#0ecb81]/5 text-[#0ecb81] border-[#0ecb81]/20"
                         : entry.score >= 50 ? "bg-orange-500/5 text-orange-500 border-orange-500/20"
                         : "bg-[#f6465d]/5 text-[#f6465d] border-[#f6465d]/20")}>
                         {entry.score}
                     </div>
-                    <div className="flex flex-col text-[10px] text-muted-foreground font-medium">
+                    <div className="flex-col text-[9px] text-muted-foreground font-medium hidden sm:flex">
                         <span>SIGNAL</span><span>SCORE</span>
                     </div>
                 </div>
@@ -238,8 +246,7 @@ const SignalRow = memo(({ entry, index, isNew }: { entry: EFSignalEntry; index: 
 
             <TableCell className="text-right">
                 <div className="flex flex-col items-end gap-0.5">
-                    <span className="text-[9px] text-muted-foreground font-bold uppercase tracking-widest">Entry</span>
-                    <span className="text-[13px] font-bold text-foreground tabular-nums">${formatPrice(entry.entryPrice)}</span>
+                    <span className="text-[11px] sm:text-[13px] font-bold text-foreground tabular-nums">${formatPrice(entry.entryPrice)}</span>
                     {priceMoved && (
                         <span className={cn("text-[11px] font-semibold tabular-nums",
                             entry.currentPrice > entry.entryPrice ? "text-[#0ecb81]" : "text-[#f6465d]")}>
@@ -249,16 +256,16 @@ const SignalRow = memo(({ entry, index, isNew }: { entry: EFSignalEntry; index: 
                 </div>
             </TableCell>
 
-            <TableCell className="text-right"><Pct val={entry.change1h} /></TableCell>
-            <TableCell className="text-right"><Pct val={entry.change24h} /></TableCell>
+            <TableCell className="hidden md:table-cell text-right"><Pct val={entry.change1h} /></TableCell>
+            <TableCell className="hidden sm:table-cell text-right"><Pct val={entry.change24h} /></TableCell>
 
-            <TableCell className="text-right">
+            <TableCell className="hidden lg:table-cell text-right">
                 <span className="text-[13px] font-bold tabular-nums">
                     ${entry.volume24h ? (entry.volume24h / 1e6).toFixed(2) : "0.00"}M
                 </span>
             </TableCell>
 
-            <TableCell className="text-right">
+            <TableCell className="hidden lg:table-cell text-right">
                 <Tooltip>
                     <TooltipTrigger asChild>
                         <div className={cn("inline-flex items-center justify-center w-10 h-8 rounded-md font-bold text-sm cursor-help border",
@@ -269,7 +276,7 @@ const SignalRow = memo(({ entry, index, isNew }: { entry: EFSignalEntry; index: 
                             {entry.volatility.toFixed(1)}
                         </div>
                     </TooltipTrigger>
-                    <TooltipContent className="bg-popover border-border p-3 shadow-xl max-w-[250px] z-50">
+                    <TooltipContent side="top" className="bg-popover text-popover-foreground border-border p-3 shadow-xl max-w-[250px] z-50">
                         <p className="text-xs font-mono whitespace-pre-wrap">{entry.volatilityTooltip || "No data"}</p>
                     </TooltipContent>
                 </Tooltip>
@@ -284,38 +291,84 @@ const StatsBar = memo(({ entries }: { entries: EFSignalEntry[] }) => {
     const sell = entries.filter(e => e.signalType === "SELL").length;
     const avg  = entries.length ? Math.round(entries.reduce((s, e) => s + e.score, 0) / entries.length) : 0;
     return (
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-            <div className="gecko-card p-4 border-l-4 border-l-[#0ecb81] bg-[#0ecb81]/5">
-                <div className="flex items-center justify-between mb-2">
-                    <TrendingUp className="text-[#0ecb81]" size={20} />
-                    <Badge className="bg-[#0ecb81]/20 text-[#0ecb81] text-[10px] font-bold">7›25›99</Badge>
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-2 sm:gap-3">
+            {/* Bullish */}
+            <div className="relative overflow-hidden rounded-xl border border-border bg-card px-2.5 py-2 sm:px-4 sm:py-3 flex items-center justify-between gap-2">
+                <div className="min-w-0">
+                    <div className="flex items-center gap-1 mb-1">
+                        <span className="text-[9px] font-black uppercase tracking-widest text-muted-foreground">Bullish</span>
+                        <span className="text-[9px] font-black px-1.5 py-0.5 rounded bg-[#0ecb81]/12 text-[#0ecb81]">7›25›99</span>
+                    </div>
+                    <p className="text-[18px] sm:text-[30px] font-black tracking-tighter leading-none text-[#0ecb81]">{buy}</p>
                 </div>
-                <p className="text-3xl font-black text-[#0ecb81]">{buy}</p>
-                <p className="text-[11px] font-bold text-muted-foreground uppercase">Buy Signals</p>
+                <svg width="60" height="48" viewBox="0 0 72 56" fill="none" className="shrink-0 hidden sm:block text-[#0ecb81] opacity-80">
+                    <rect x="4" y="44" width="12" height="12" rx="2" fill="currentColor" fillOpacity="0.2"/>
+                    <rect x="20" y="32" width="12" height="24" rx="2" fill="currentColor" fillOpacity="0.4"/>
+                    <rect x="36" y="18" width="12" height="38" rx="2" fill="currentColor" fillOpacity="0.65"/>
+                    <rect x="52" y="6" width="12" height="50" rx="2" fill="currentColor" fillOpacity="0.9"/>
+                    <polyline points="10,44 26,32 42,18 58,6" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" opacity="0.45"/>
+                    <path d="M54 2L62 2L62 10" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                    <line x1="54" y1="10" x2="62" y2="2" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
+                </svg>
+                <div className="absolute bottom-0 left-0 h-[3px] w-full" style={{background:"linear-gradient(90deg,#0ecb8190,transparent)"}}/>
             </div>
-            <div className="gecko-card p-4 border-l-4 border-l-[#f6465d] bg-[#f6465d]/5">
-                <div className="flex items-center justify-between mb-2">
-                    <TrendingDown className="text-[#f6465d]" size={20} />
-                    <Badge className="bg-[#f6465d]/20 text-[#f6465d] text-[10px] font-bold">99›25›7</Badge>
+            {/* Bearish */}
+            <div className="relative overflow-hidden rounded-xl border border-border bg-card px-2.5 py-2 sm:px-4 sm:py-3 flex items-center justify-between gap-2">
+                <div className="min-w-0">
+                    <div className="flex items-center gap-1 mb-1">
+                        <span className="text-[9px] font-black uppercase tracking-widest text-muted-foreground">Bearish</span>
+                        <span className="text-[9px] font-black px-1.5 py-0.5 rounded bg-[#f6465d]/12 text-[#f6465d]">99›25›7</span>
+                    </div>
+                    <p className="text-[18px] sm:text-[30px] font-black tracking-tighter leading-none text-[#f6465d]">{sell}</p>
                 </div>
-                <p className="text-3xl font-black text-[#f6465d]">{sell}</p>
-                <p className="text-[11px] font-bold text-muted-foreground uppercase">Sell Signals</p>
+                <svg width="60" height="48" viewBox="0 0 72 56" fill="none" className="shrink-0 hidden sm:block text-[#f6465d] opacity-80">
+                    <rect x="4" y="4" width="12" height="50" rx="2" fill="currentColor" fillOpacity="0.9"/>
+                    <rect x="20" y="18" width="12" height="36" rx="2" fill="currentColor" fillOpacity="0.65"/>
+                    <rect x="36" y="32" width="12" height="22" rx="2" fill="currentColor" fillOpacity="0.4"/>
+                    <rect x="52" y="44" width="12" height="10" rx="2" fill="currentColor" fillOpacity="0.2"/>
+                    <polyline points="10,4 26,18 42,32 58,44" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" opacity="0.45"/>
+                    <path d="M54 54L62 54L62 46" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                    <line x1="54" y1="46" x2="62" y2="54" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
+                </svg>
+                <div className="absolute bottom-0 left-0 h-[3px] w-full" style={{background:"linear-gradient(90deg,#f6465d90,transparent)"}}/>
             </div>
-            <div className="gecko-card p-4 border-l-4 border-l-primary bg-primary/5">
-                <div className="flex items-center justify-between mb-2">
-                    <Calculator className="text-primary" size={20} />
-                    <Badge className="bg-primary/20 text-primary text-[10px] font-bold">AVG</Badge>
+            {/* Avg Score */}
+            <div className="relative overflow-hidden rounded-xl border border-border bg-card px-2.5 py-2 sm:px-4 sm:py-3 flex items-center justify-between gap-2">
+                <div className="min-w-0">
+                    <div className="flex items-center gap-1 mb-1">
+                        <span className="text-[9px] font-black uppercase tracking-widest text-muted-foreground">Avg Score</span>
+                        <span className="text-[9px] font-black px-1.5 py-0.5 rounded bg-foreground/10 text-foreground">AVG</span>
+                    </div>
+                    <p className="text-[18px] sm:text-[30px] font-black tracking-tighter leading-none text-foreground">{avg}</p>
                 </div>
-                <p className="text-3xl font-black text-primary">{avg}</p>
-                <p className="text-[11px] font-bold text-muted-foreground uppercase">Avg Score</p>
+                <svg width="52" height="52" viewBox="0 0 56 56" fill="none" className="shrink-0 hidden sm:block text-foreground opacity-70">
+                    <circle cx="28" cy="28" r="22" stroke="currentColor" strokeWidth="3" strokeOpacity="0.12"/>
+                    <circle cx="28" cy="28" r="22" stroke="currentColor" strokeWidth="3" strokeDasharray="100 38" strokeLinecap="round" fill="none" transform="rotate(-90 28 28)"/>
+                    <circle cx="28" cy="28" r="13" stroke="currentColor" strokeWidth="1.5" strokeOpacity="0.18" fill="none"/>
+                    <circle cx="28" cy="28" r="4" fill="currentColor" fillOpacity="0.55"/>
+                    <line x1="28" y1="6" x2="28" y2="12" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeOpacity="0.35"/>
+                    <line x1="50" y1="28" x2="44" y2="28" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeOpacity="0.35"/>
+                    <line x1="6" y1="28" x2="12" y2="28" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeOpacity="0.35"/>
+                </svg>
+                <div className="absolute bottom-0 left-0 h-[3px] w-full bg-gradient-to-r from-foreground/40 to-transparent"/>
             </div>
-            <div className="gecko-card p-4 border-l-4 border-l-orange-500 bg-orange-500/5">
-                <div className="flex items-center justify-between mb-2">
-                    <Trophy className="text-orange-500" size={20} />
-                    <Badge className="bg-orange-500/20 text-orange-500 text-[10px] font-bold">TOTAL</Badge>
+            {/* Total */}
+            <div className="relative overflow-hidden rounded-xl border border-border bg-card px-2.5 py-2 sm:px-4 sm:py-3 flex items-center justify-between gap-2">
+                <div className="min-w-0">
+                    <div className="flex items-center gap-1 mb-1">
+                        <span className="text-[9px] font-black uppercase tracking-widest text-muted-foreground">Stored</span>
+                        <span className="text-[9px] font-black px-1.5 py-0.5 rounded bg-orange-500/12 text-orange-500">TOTAL</span>
+                    </div>
+                    <p className="text-[18px] sm:text-[30px] font-black tracking-tighter leading-none text-orange-500">{entries.length}</p>
                 </div>
-                <p className="text-3xl font-black text-orange-500">{entries.length}</p>
-                <p className="text-[11px] font-bold text-muted-foreground uppercase">Stored Signals</p>
+                <svg width="52" height="52" viewBox="0 0 60 56" fill="none" className="shrink-0 hidden sm:block text-orange-500 opacity-80">
+                    <ellipse cx="30" cy="44" rx="22" ry="7" fill="currentColor" fillOpacity="0.25"/>
+                    <path d="M8 28L8 44C8 48.4 18 51 30 51C42 51 52 48.4 52 44L52 28" stroke="currentColor" strokeWidth="1.5" strokeOpacity="0.35" fill="none"/>
+                    <ellipse cx="30" cy="28" rx="22" ry="7" fill="currentColor" fillOpacity="0.5"/>
+                    <path d="M8 12L8 28C8 32.4 18 35 30 35C42 35 52 32.4 52 28L52 12" stroke="currentColor" strokeWidth="1.5" strokeOpacity="0.5" fill="none"/>
+                    <ellipse cx="30" cy="12" rx="22" ry="7" fill="currentColor" fillOpacity="0.8"/>
+                </svg>
+                <div className="absolute bottom-0 left-0 h-[3px] w-full" style={{background:"linear-gradient(90deg,#f9731690,transparent)"}}/>
             </div>
         </div>
     );
@@ -325,60 +378,57 @@ StatsBar.displayName = "StatsBar";
 // ─── Main ─────────────────────────────────────────────────────────────────────
 
 export default function ExchangeFuturesTerminal({
-    title = "EXCHANGE FUTURES MARKET",
+    title = "",
     description = "Triple EMA Strategy 7 › 25 › 99",
     storageKey = DEFAULT_KEY,
     exportSource,
     scanInterval = 30_000,
     initialData = [],
     fetchAction,
+    alertPage = "Futures",
 }: EFTerminalProps) {
-    // Initialize from initialData (available on both server + client — no hydration mismatch).
-    // After mount, localStorage silently upgrades to historical data.
-    const [entries, setEntries] = useState<EFSignalEntry[]>(() =>
-        initialData.length > 0 ? seedFromRaw(initialData) : []
-    );
-    const [newIds,     setNewIds]     = useState<Set<string>>(new Set());
-    const [refreshing, setRefreshing] = useState(false);
-    const [timeframe,  setTimeframe]  = useState("all");
-    const [search,     setSearch]     = useState("");
-    const [page,       setPage]       = useState(1);
+    const [entries, setEntries] = useState<EFSignalEntry[]>(() => {
+        if (initialData.length > 0) return seedFromRaw(initialData);
+        if (typeof window === "undefined") return [];
+        return loadEntries(DEFAULT_KEY);
+    });
+    const [newIds,       setNewIds]       = useState<Set<string>>(new Set());
+    const [refreshing,   setRefreshing]   = useState(false);
+    const [timeframe,    setTimeframe]    = useState("all");
+    const [search,       setSearch]       = useState("");
+    const [page,         setPage]         = useState(1);
+    const [lastScan,     setLastScan]     = useState<number>(0);
+    const [exportOpen,   setExportOpen]   = useState(false);
+    const [exportTf,     setExportTf]     = useState("all");
+    const [exportType,   setExportType]   = useState("all");
+    const [exportScore,  setExportScore]  = useState(70);
+    const [filterDirection, setFilterDirection] = useState<"all"|"BUY"|"SELL">("all");
+    const [filterKind,      setFilterKind]      = useState<"all"|"TRIPLE_ALIGN"|"PULLBACK">("all");
+    const [sortBy,          setSortBy]          = useState<"time"|"score"|"volume"|"change24h">("time");
     const PAGE = 50;
 
-    const [lastScan,    setLastScan]    = useState<number>(0);
-    const [exportOpen,  setExportOpen]  = useState(false);
-    const [exportTf,    setExportTf]    = useState("all");
-    const [exportType,  setExportType]  = useState("all");
-    const [exportScore, setExportScore] = useState(70);
+    useEffect(() => { setPage(1); }, [search, timeframe, filterDirection, filterKind, sortBy]);
 
-    // After mount: upgrade from localStorage (has more history than initialData)
-    useEffect(() => {
-        const stored = loadEntries(storageKey);
-        if (stored.length > 0) setEntries(stored);
-    }, []); // eslint-disable-line react-hooks/exhaustive-deps
-
-    useEffect(() => { setPage(1); }, [search, timeframe]);
-
-    // Stable ref so fetchAndMerge doesn't need timeframe in its deps
     const tfRef = useRef(timeframe);
     useEffect(() => { tfRef.current = timeframe; }, [timeframe]);
 
-    // Debounced save — at most once per 3 s
     const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
     const save = useCallback((data: EFSignalEntry[]) => {
         if (saveTimer.current) clearTimeout(saveTimer.current);
         saveTimer.current = setTimeout(() => saveEntries(data, storageKey), 3000);
     }, [storageKey]);
 
-    const knownIds  = useRef<Set<string>>(new Set());
-    const didLoad   = useRef(false);
+    // Maps entryId → last seen crossoverTimestamp; new signal if ts advanced.
+    const knownIdsWithTs = useRef<Map<string, number>>(new Map());
+    const didLoad        = useRef(false);
+    const newIdsTimer    = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const sseNudgeTimer  = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-    // Seed knownIds once from initial entries (runs once after mount)
     const knownIdsSeeded = useRef(false);
     useEffect(() => {
         if (knownIdsSeeded.current) return;
         knownIdsSeeded.current = true;
-        entries.forEach(e => knownIds.current.add(e.entryId));
+        entries.forEach(e => knownIdsWithTs.current.set(e.entryId, e.crossoverTimestamp));
     }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
     const fetchAndMerge = useCallback(async (tfOverride?: string, manual = false) => {
@@ -398,18 +448,24 @@ export default function ExchangeFuturesTerminal({
                 if (!sig?.signalType) continue;
                 const e = toEntry(sig);
                 fresh.push(e);
-                if (!knownIds.current.has(e.entryId)) {
+                const knownTs = knownIdsWithTs.current.get(e.entryId);
+                if (knownTs === undefined || e.crossoverTimestamp > knownTs) {
                     newEntryIds.push(e.entryId);
                     brandNew.push(e);
-                    knownIds.current.add(e.entryId);
+                    knownIdsWithTs.current.set(e.entryId, e.crossoverTimestamp);
+                    if (knownIdsWithTs.current.size > 2000) {
+                        const arr = [...knownIdsWithTs.current.entries()];
+                        knownIdsWithTs.current = new Map(arr.slice(arr.length - 1000));
+                    }
                 }
             }
 
             if (newEntryIds.length > 0) {
                 setNewIds(new Set(newEntryIds));
-                setTimeout(() => setNewIds(new Set()), 8000);
+                if (newIdsTimer.current) clearTimeout(newIdsTimer.current);
+                newIdsTimer.current = setTimeout(() => setNewIds(new Set()), 8000);
                 if (didLoad.current) {
-                    pushAlerts("Binance Futures", brandNew.map(e => ({
+                    pushAlerts(alertPage, brandNew.map(e => ({
                         symbol: e.symbol, name: e.name, image: e.image,
                         signalType: e.signalType, timeframe: e.timeframe, score: e.score,
                     })));
@@ -418,16 +474,16 @@ export default function ExchangeFuturesTerminal({
             didLoad.current = true;
 
             setEntries(prev => {
-                // Use a Map to guarantee unique entryIds — concurrent TF polls can produce duplicates
                 const map = new Map<string, EFSignalEntry>();
-                for (const e of [...fresh, ...prev.filter(e => e.timeframe !== activeTf)]) {
-                    if (!map.has(e.entryId)) map.set(e.entryId, e);
+                for (const e of [...fresh, ...prev]) {
+                    const existing = map.get(e.entryId);
+                    if (!existing || e.crossoverTimestamp > existing.crossoverTimestamp)
+                        map.set(e.entryId, e);
                 }
                 const merged = [...map.values()]
                     .sort((a, b) => b.crossoverTimestamp - a.crossoverTimestamp)
                     .slice(0, MAX_STORED);
 
-                // Skip re-render if nothing actually changed
                 if (
                     merged.length === prev.length &&
                     merged.every((e, i) => e.entryId === prev[i].entryId && e.currentPrice === prev[i].currentPrice)
@@ -436,29 +492,39 @@ export default function ExchangeFuturesTerminal({
                 save(merged);
                 return merged;
             });
-        } catch (err) {
-            console.warn("[EF]", err);
+        } catch {
+            // silent
         } finally {
             if (manual) setRefreshing(false);
         }
-    }, [fetchAction, save]);
+    }, [fetchAction, save, alertPage]);
 
-    // Poll all timeframes in one "all" call — same as manual refresh.
-    // Server-side scans all 6 TFs sequentially and returns the union.
     useEffect(() => {
         fetchAndMerge("all");
         const id = setInterval(() => fetchAndMerge("all"), scanInterval);
         return () => clearInterval(id);
     }, [fetchAndMerge, scanInterval]);
 
-    // Tick every second to keep "last scanned" display fresh
-    const [, setTick] = useState(0);
+    // SSE: trigger immediate fetch when a binance signal arrives
     useEffect(() => {
-        const t = setInterval(() => setTick(n => n + 1), 1000);
-        return () => clearInterval(t);
-    }, []);
+        if (!fetchAction) return;
+        const es = new EventSource("/api/stream");
+        es.onmessage = (e: MessageEvent) => {
+            try {
+                const sig = JSON.parse(e.data as string) as { source?: string };
+                if (sig.source !== "binance") return;
+                if (sseNudgeTimer.current) clearTimeout(sseNudgeTimer.current);
+                sseNudgeTimer.current = setTimeout(() => fetchAndMerge("all"), 600);
+            } catch { /* malformed */ }
+        };
+        es.onerror = () => { es.close(); };
+        return () => {
+            es.close();
+            if (sseNudgeTimer.current) clearTimeout(sseNudgeTimer.current);
+        };
+    }, [fetchAction, fetchAndMerge]);
 
-    // Immediate fetch when switching to a specific TF — show spinner since user expects it
+
     const prevTf = useRef(timeframe);
     useEffect(() => {
         if (prevTf.current === timeframe) return;
@@ -468,18 +534,27 @@ export default function ExchangeFuturesTerminal({
 
     const deferredSearch = useDeferredValue(search);
     const filtered = useMemo(() => {
-        const byTf = timeframe === "all" ? entries : entries.filter(e => e.timeframe === timeframe);
-        if (!deferredSearch.trim()) return byTf;
-        const terms = deferredSearch.toLowerCase().split(/[\s,]+/).filter(Boolean);
-        return byTf.filter(e => terms.some(t =>
-            e.symbol.toLowerCase().includes(t) ||
-            e.name.toLowerCase().includes(t) ||
-            e.signalType.toLowerCase() === t ||
-            e.timeframe === t ||
-            (e.signalKind ?? "").toLowerCase().includes(t) ||
-            (e.signalName ?? "").toLowerCase().includes(t)
-        ));
-    }, [entries, deferredSearch, timeframe]);
+        let list = timeframe === "all" ? entries : entries.filter(e => e.timeframe === timeframe);
+        if (filterDirection !== "all") list = list.filter(e => e.signalType === filterDirection);
+        if (filterKind !== "all")      list = list.filter(e => e.signalKind === filterKind);
+        if (deferredSearch.trim()) {
+            const terms = deferredSearch.toLowerCase().split(/[\s,]+/).filter(Boolean);
+            list = list.filter(e => terms.some(t =>
+                e.symbol.toLowerCase().includes(t) ||
+                e.name.toLowerCase().includes(t) ||
+                e.signalType.toLowerCase() === t ||
+                e.timeframe === t ||
+                (e.signalKind ?? "").toLowerCase().includes(t) ||
+                (e.signalName ?? "").toLowerCase().includes(t)
+            ));
+        }
+        return [...list].sort((a, b) => {
+            if (sortBy === "score")     return b.score - a.score;
+            if (sortBy === "volume")    return (b.volume24h ?? 0) - (a.volume24h ?? 0);
+            if (sortBy === "change24h") return Math.abs(b.change24h ?? 0) - Math.abs(a.change24h ?? 0);
+            return b.crossoverTimestamp - a.crossoverTimestamp;
+        });
+    }, [entries, deferredSearch, timeframe, filterDirection, filterKind, sortBy]);
 
     const totalPages = Math.ceil(filtered.length / PAGE);
     const pageStart  = (page - 1) * PAGE;
@@ -487,16 +562,17 @@ export default function ExchangeFuturesTerminal({
 
     return (
         <TooltipProvider delayDuration={0}>
-        <div className="space-y-6">
+        <div className="space-y-3 sm:space-y-5">
 
             {/* Title Bar */}
-            <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+            <div className="flex flex-col md:flex-row md:items-center justify-between gap-2 sm:gap-4">
                 <div>
-                    <h1 className="text-lg md:text-3xl font-black text-foreground tracking-tighter uppercase leading-tight">{title}</h1>
-                    <p className="text-[10px] md:text-[12px] font-bold text-muted-foreground uppercase opacity-80">{description}</p>
+                    {title && <h1 className="text-[14px] sm:text-lg md:text-3xl font-black text-foreground tracking-tighter uppercase leading-tight">{title}</h1>}
+                    {description && <p className="text-[9px] sm:text-[10px] md:text-[12px] font-bold text-muted-foreground uppercase opacity-80">{description}</p>}
                 </div>
                 <div className="flex items-center gap-2 flex-wrap">
                     {/* Timeframe */}
+                    <div className="overflow-x-auto no-scrollbar">
                     <div className="flex bg-muted rounded-lg p-1 border border-border">
                         {["all","5m","15m","30m","1h","4h","1d"].map(tf => (
                             <button key={tf} onClick={() => { setTimeframe(tf); setPage(1); }}
@@ -506,17 +582,18 @@ export default function ExchangeFuturesTerminal({
                             </button>
                         ))}
                     </div>
+                    </div>
                     {/* Live dot */}
                     <div className="flex items-center gap-1.5">
                         <div className={cn("h-2 w-2 rounded-full animate-pulse", refreshing ? "bg-primary" : "bg-green-500")} />
                         <span className="text-[11px] text-muted-foreground hidden sm:inline">
-                            {refreshing ? "Updating…" : lastScan ? `Scanned ${Math.floor((Date.now() - lastScan) / 1000)}s ago` : "Scanning…"}
+                            {refreshing ? "Updating…" : lastScan ? <>Scanned <ScannedAgo ts={lastScan} /></> : "Scanning…"}
                         </span>
                     </div>
                     <Button variant="outline" size="sm" onClick={() => fetchAndMerge(undefined, true)} disabled={refreshing} className="h-8">
                         <RefreshCw size={14} className={cn(refreshing && "animate-spin")} />
                     </Button>
-                    <AlertsButton page="Binance Futures" />
+                    <AlertsButton page={alertPage} />
 
                     {/* Export */}
                     <Dialog open={exportOpen} onOpenChange={setExportOpen}>
@@ -551,7 +628,7 @@ export default function ExchangeFuturesTerminal({
                                             <button key={t} onClick={() => setExportType(t)}
                                                 className={cn("px-2.5 py-1 rounded text-[11px] font-bold border transition-all",
                                                     exportType === t ? "bg-primary text-primary-foreground border-primary" : "border-border text-muted-foreground hover:text-foreground")}>
-                                                {t}
+                                                {t === "BUY" ? "BULLISH" : t === "SELL" ? "BEARISH" : t}
                                             </button>
                                         ))}
                                     </div>
@@ -575,18 +652,28 @@ export default function ExchangeFuturesTerminal({
                                         ).length}
                                     </span>
                                 </p>
-                                <a
-                                    href={`/api/export?${new URLSearchParams({
-                                        ...(exportSource ? { source: exportSource } : {}),
-                                        ...(exportTf !== "all" ? { timeframe: exportTf } : {}),
-                                        ...(exportType !== "all" ? { signalType: exportType } : {}),
-                                        minScore: String(exportScore),
-                                    })}`}
-                                    download onClick={() => setExportOpen(false)}
+                                <button
+                                    onClick={async () => {
+                                        const csv = await exportSignalsCsvAction(
+                                            exportSource,
+                                            exportTf !== "all" ? exportTf : undefined,
+                                            exportScore,
+                                        );
+                                        const filteredCsv = exportType === "all" ? csv : csv
+                                            .split("\n")
+                                            .filter((l, i) => i === 0 || l.toLowerCase().includes(exportType.toLowerCase()))
+                                            .join("\n");
+                                        const blob = new Blob([filteredCsv], { type: "text/csv" });
+                                        const url = URL.createObjectURL(blob);
+                                        const a = document.createElement("a");
+                                        a.href = url; a.download = "signals.csv"; a.click();
+                                        URL.revokeObjectURL(url);
+                                        setExportOpen(false);
+                                    }}
                                     className="flex items-center justify-center gap-2 w-full h-9 rounded-lg text-[12px] font-semibold bg-primary text-primary-foreground hover:bg-primary/90 transition-colors"
                                 >
                                     <Download size={13} strokeWidth={2.5} /> Download CSV
-                                </a>
+                                </button>
                             </div>
                         </DialogContent>
                     </Dialog>
@@ -595,24 +682,65 @@ export default function ExchangeFuturesTerminal({
 
             <StatsBar entries={filtered} />
 
-            {/* Search */}
-            <div className="flex items-center gap-3">
-                <div className="relative flex-1 max-w-sm">
-                    <input type="text" placeholder="Search coins or signal type…" value={search}
-                        onChange={e => { setSearch(e.target.value); setPage(1); }}
-                        className="w-full h-9 pl-9 pr-4 rounded-lg border border-border bg-background text-sm focus:outline-none focus:ring-1 focus:ring-primary" />
-                    <Activity size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
+            {/* Search + Filters */}
+            <div className="space-y-2">
+                <div className="flex items-center gap-3">
+                    <div className="relative flex-1 max-w-full sm:max-w-sm">
+                        <input type="text" placeholder="Search coins or signal type…" value={search}
+                            onChange={e => { setSearch(e.target.value); setPage(1); }}
+                            className="w-full h-8 pl-8 pr-3 rounded-lg border border-border bg-background text-[12px] focus:outline-none focus:ring-1 focus:ring-primary" />
+                        <Activity size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-foreground" />
+                    </div>
+                    <span className="text-[11px] text-muted-foreground">{filtered.length} entries</span>
                 </div>
-                <span className="text-[11px] text-muted-foreground">{filtered.length} entries</span>
+
+                {/* Filter row */}
+                <div className="flex flex-wrap items-center gap-1.5 sm:gap-2">
+                    {/* Direction */}
+                    <div className="flex bg-muted rounded-lg p-0.5 border border-border">
+                        {([["all","ALL"],["BUY","BULLISH"],["SELL","BEARISH"]] as const).map(([val, label]) => (
+                            <button key={val} onClick={() => { setFilterDirection(val); setPage(1); }}
+                                className={cn("px-2.5 py-1 text-[11px] font-bold rounded-md transition-all",
+                                    filterDirection === val ? "bg-background text-primary shadow-sm" : "text-muted-foreground hover:text-foreground")}>
+                                {label}
+                            </button>
+                        ))}
+                    </div>
+
+                    {/* Kind */}
+                    <div className="flex bg-muted rounded-lg p-0.5 border border-border">
+                        {([["all","ALL KIND"],["TRIPLE_ALIGN","🔥 ALIGNED"],["PULLBACK","🎯 PULLBACK"]] as const).map(([val, label]) => (
+                            <button key={val} onClick={() => { setFilterKind(val); setPage(1); }}
+                                className={cn("px-2.5 py-1 text-[11px] font-bold rounded-md transition-all",
+                                    filterKind === val ? "bg-background text-primary shadow-sm" : "text-muted-foreground hover:text-foreground")}>
+                                {label}
+                            </button>
+                        ))}
+                    </div>
+
+                    {/* Sort */}
+                    <div className="flex items-center gap-1.5 ml-0 sm:ml-auto">
+                        <span className="text-[11px] text-muted-foreground font-semibold hidden sm:inline">Sort:</span>
+                        <div className="flex bg-muted rounded-lg p-0.5 border border-border">
+                            {([["time","Time"],["score","Score"],["volume","Vol"],["change24h","24h%"]] as const).map(([val, label]) => (
+                                <button key={val} onClick={() => setSortBy(val)}
+                                    className={cn("px-2.5 py-1 text-[11px] font-bold rounded-md transition-all",
+                                        sortBy === val ? "bg-background text-primary shadow-sm" : "text-muted-foreground hover:text-foreground")}>
+                                    {label}
+                                </button>
+                            ))}
+                        </div>
+                    </div>
+                </div>
             </div>
 
             {/* Table */}
             <div className="gecko-card rounded-xl overflow-hidden border border-border">
                 {filtered.length === 0 ? (
-                    <div className="p-12 text-center">
+                    <div className="p-8 sm:p-12 text-center">
                         <Activity size={40} className="mx-auto mb-4 text-muted-foreground/30" />
                         <p className="text-sm font-bold text-muted-foreground">No signals yet</p>
-                        <p className="text-[11px] text-muted-foreground/60 mt-1">Scanner runs every 5s · EMA 7/25/99 · PRE-CROSS → ALIGNED → PULLBACK</p>
+                        <p className="text-[11px] text-muted-foreground/60 mt-1">Scanner runs every 30s · EMA 7/25/99 · Score ≥ 60</p>
                     </div>
                 ) : (
                     <div className="overflow-x-auto">
@@ -630,19 +758,24 @@ export default function ExchangeFuturesTerminal({
                                     <TableHead className="text-right text-[10px] font-black uppercase">
                                         <ColTip title="Price" tip="Entry price + live now price" right />
                                     </TableHead>
-                                    <TableHead className="text-right text-[10px] font-black uppercase">
+                                    <TableHead className="hidden md:table-cell text-right text-[10px] font-black uppercase">
                                         <ColTip title="1H %" tip="Change vs ~1h ago" right />
                                     </TableHead>
-                                    <TableHead className="text-right text-[10px] font-black uppercase">24H %</TableHead>
-                                    <TableHead className="text-right text-[10px] font-black uppercase">Volume</TableHead>
-                                    <TableHead className="text-right text-[10px] font-black uppercase">
+                                    <TableHead className="hidden sm:table-cell text-right text-[10px] font-black uppercase">24H %</TableHead>
+                                    <TableHead className="hidden lg:table-cell text-right text-[10px] font-black uppercase">Volume</TableHead>
+                                    <TableHead className="hidden lg:table-cell text-right text-[10px] font-black uppercase">
                                         <ColTip title="Vol." tip="Volatility 0–10" right />
                                     </TableHead>
                                 </TableRow>
                             </TableHeader>
                             <TableBody>
                                 {pageItems.map((entry, i) => (
-                                    <SignalRow key={entry.entryId} entry={entry} index={pageStart + i} isNew={newIds.has(entry.entryId)} />
+                                    <SignalRow
+                                        key={entry.entryId}
+                                        entry={entry}
+                                        index={pageStart + i}
+                                        isNew={newIds.has(entry.entryId)}
+                                    />
                                 ))}
                             </TableBody>
                         </Table>
@@ -650,7 +783,7 @@ export default function ExchangeFuturesTerminal({
                 )}
 
                 {totalPages > 1 && (
-                    <div className="flex items-center justify-between px-4 py-3 border-t border-border">
+                    <div className="flex flex-wrap items-center justify-between px-4 py-3 border-t border-border gap-2">
                         <span className="text-[11px] text-muted-foreground">Page {page} of {totalPages} ({filtered.length})</span>
                         <div className="flex gap-2">
                             <Button variant="outline" size="sm" disabled={page === 1} onClick={() => setPage(p => p - 1)}>← Prev</Button>

@@ -16,6 +16,7 @@ class SignalSource(str, enum.Enum):
     BINANCE = "binance"
     COINGECKO = "coingecko"
     ICT = "ict"
+    SMC = "smc"
 
 
 class SignalDirection(str, enum.Enum):
@@ -31,6 +32,9 @@ class Signal(Base):
         Index("ix_signals_symbol", "symbol"),
         Index("ix_signals_created_at", "created_at"),
         Index("ix_signals_score", "ml_score"),
+        # Covering index for the most common terminal query:
+        # WHERE source=? AND ml_score>=? ORDER BY created_at DESC
+        Index("ix_signals_source_score_time", "source", "ml_score", "created_at"),
         {"schema": None},
     )
 
@@ -38,8 +42,12 @@ class Signal(Base):
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
     )
     symbol: Mapped[str] = mapped_column(String(20), nullable=False)
-    source: Mapped[SignalSource] = mapped_column(Enum(SignalSource), nullable=False)
-    direction: Mapped[SignalDirection] = mapped_column(Enum(SignalDirection), nullable=False)
+    source: Mapped[SignalSource] = mapped_column(
+        Enum(SignalSource, native_enum=False, length=20), nullable=False
+    )
+    direction: Mapped[SignalDirection] = mapped_column(
+        Enum(SignalDirection, native_enum=False, length=10), nullable=False
+    )
     timeframe: Mapped[str] = mapped_column(String(5), nullable=False)
     signal_time: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 

@@ -112,6 +112,7 @@ class Backtester:
 
         trades: list[Trade] = []
         open_trade: Trade | None = None
+        _entry_idx: int = 0
         equity = self.capital
         equity_curve: list[dict] = [{"ts": df["open_time"].iloc[0], "equity": equity}]
 

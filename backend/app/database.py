@@ -1,6 +1,6 @@
 from collections.abc import AsyncGenerator
 
-from sqlalchemy import event, text
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import (
     AsyncSession,
     async_sessionmaker,
@@ -18,7 +18,6 @@ engine = create_async_engine(
     pool_timeout=settings.DB_POOL_TIMEOUT,
     pool_pre_ping=True,
     echo=settings.DEBUG,
-    json_serializer=lambda obj: __import__("orjson").dumps(obj).decode(),
 )
 
 AsyncSessionFactory = async_sessionmaker(

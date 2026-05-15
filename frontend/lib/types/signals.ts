@@ -6,7 +6,7 @@ export interface EFSignalEntry {
   entryId: string;
   symbol: string;
   name: string;
-  image: string;
+  image?: string;
   signalType: "BUY" | "SELL";
   signalName?: string;
   signalKind?: "TRIPLE_ALIGN" | "PULLBACK";
@@ -45,7 +45,7 @@ export interface ICTSignal {
   coinId: string;
   symbol: string;
   name: string;
-  image: string;
+  image?: string;
   timeframe: string;
   signalType: "LONG" | "SHORT";
   setupType: string;

@@ -1,7 +1,7 @@
 "use client";
 
 import * as React from "react";
-import { useState, useEffect, memo, useRef } from "react";
+import { useState, useEffect, useCallback, memo, useRef, useMemo, useDeferredValue } from "react";
 import { pushAlerts, AlertsButton } from "@/components/SignalAlerts";
 import {
   TrendingUp, TrendingDown, RefreshCw, Target, Zap, AlertTriangle,
@@ -9,6 +9,8 @@ import {
   ShieldAlert, CheckCircle2, Clock, BarChart2, Activity,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { CoinIcon, symbolToCoinId } from "@/components/CoinIcon";
+import { SignalAge } from "@/components/SignalAge";
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from "@/components/ui/table";
@@ -30,11 +32,18 @@ function fmt(price: number): string {
   return price.toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
 }
 
+function fmtVol(usd: number): string {
+  if (usd >= 1_000_000_000) return `$${(usd / 1_000_000_000).toFixed(1)}B`;
+  if (usd >= 1_000_000) return `$${(usd / 1_000_000).toFixed(1)}M`;
+  if (usd >= 1_000) return `$${(usd / 1_000).toFixed(0)}K`;
+  return `$${usd.toFixed(0)}`;
+}
+
 const KZ_COLORS: Record<KillZoneName, string> = {
-  LONDON: "text-blue-400 bg-blue-400/10",
-  NEW_YORK: "text-orange-400 bg-orange-400/10",
-  ASIA: "text-purple-400 bg-purple-400/10",
-  LONDON_CLOSE: "text-cyan-400 bg-cyan-400/10",
+  LONDON: "text-blue-700 dark:text-blue-300 bg-blue-100 dark:bg-blue-400/10",
+  NEW_YORK: "text-orange-700 dark:text-orange-300 bg-orange-100 dark:bg-orange-400/10",
+  ASIA: "text-purple-700 dark:text-purple-300 bg-purple-100 dark:bg-purple-400/10",
+  LONDON_CLOSE: "text-cyan-700 dark:text-cyan-300 bg-cyan-100 dark:bg-cyan-400/10",
 };
 
 const KZ_LABELS: Record<KillZoneName, string> = {
@@ -45,9 +54,9 @@ const KZ_LABELS: Record<KillZoneName, string> = {
 };
 
 const PD_COLORS: Record<PremiumDiscount, string> = {
-  PREMIUM: "text-[#f6465d] bg-[#f6465d]/10",
-  DISCOUNT: "text-[#0ecb81] bg-[#0ecb81]/10",
-  EQUILIBRIUM: "text-muted-foreground bg-muted/50",
+  PREMIUM: "text-red-700 dark:text-red-400 bg-red-100 dark:bg-red-400/10",
+  DISCOUNT: "text-green-700 dark:text-green-400 bg-green-100 dark:bg-green-400/10",
+  EQUILIBRIUM: "text-foreground/60 bg-muted/50",
 };
 
 const PD_LABELS: Record<PremiumDiscount, string> = {
@@ -371,10 +380,10 @@ function HowItWorksModal({ open, onClose }: { open: boolean; onClose: () => void
 const ICTGradeCell = memo(({ signal }: { signal: ICTSignal }) => (
   <div className="flex flex-col gap-1.5 min-w-[120px]">
     <div className="flex flex-wrap gap-1">
-      <ICTBadge label="CHoCH" active={signal.choch} color="text-purple-400 bg-purple-400/10" />
-      <ICTBadge label="BOS" active={signal.bos} color="text-blue-400 bg-blue-400/10" />
-      <ICTBadge label="DISP" active={signal.displacement} color="text-orange-400 bg-orange-400/10" />
-      <ICTBadge label="IDM" active={signal.hasInducement} color="text-yellow-400 bg-yellow-400/10" />
+      <ICTBadge label="CHoCH" active={signal.choch} color="text-purple-700 dark:text-purple-300 bg-purple-100 dark:bg-purple-400/10" />
+      <ICTBadge label="BOS" active={signal.bos} color="text-blue-700 dark:text-blue-300 bg-blue-100 dark:bg-blue-400/10" />
+      <ICTBadge label="DISP" active={signal.displacement} color="text-orange-700 dark:text-orange-300 bg-orange-100 dark:bg-orange-400/10" />
+      <ICTBadge label="IDM" active={signal.hasInducement} color="text-amber-700 dark:text-amber-300 bg-amber-100 dark:bg-amber-400/10" />
       {signal.killZone && (
         <span className={cn("inline-flex items-center px-1.5 py-0.5 rounded text-[9px] font-black", KZ_COLORS[signal.killZone])}>
           {KZ_LABELS[signal.killZone]}
@@ -388,25 +397,41 @@ const ICTGradeCell = memo(({ signal }: { signal: ICTSignal }) => (
 ));
 ICTGradeCell.displayName = "ICTGradeCell";
 
+// ─── Constants (outside component to avoid re-creation) ───────────────────────
+
+const MAX_SIGNALS   = 300;
+const PAGE_SIZE     = 50;
+const MIN_ICT_GRADE = 4;   // minimum confirmed confluences to display
+const ALL_TFS       = ["5m", "15m", "30m", "1h", "4h", "1d"] as const;
+
+function signalId(s: ICTSignal): string {
+  return `${s.coinId}::${s.signalType}::${s.timeframe}::${s.sweepTimestamp}`;
+}
+
+/** 6-point ICT grade — matches the badge bar in ICTSignalRow. */
+function computeGrade(s: ICTSignal): number {
+  const oteOverlap = s.oteZone
+    ? s.entryZoneLow <= s.oteZone.high && s.entryZoneHigh >= s.oteZone.low
+    : false;
+  return [
+    s.hasSweep,
+    s.displacement,           // hasDisplacement alias
+    s.hasOB || s.hasFVG,      // entry zone present
+    s.bos    || s.choch,      // structure confirmed
+    !!s.killZone,             // in kill zone
+    s.hasInducement,          // IDM present
+  ].filter(Boolean).length;
+}
+
 // ─── Signal Row ───────────────────────────────────────────────────────────────
 
-const ICTSignalRow = memo(({ signal, index, now }: { signal: ICTSignal; index: number; now: number }) => {
+const ICTSignalRow = memo(({ signal, index }: { signal: ICTSignal; index: number }) => {
   const isLong = signal.signalType === "LONG";
   const isInZone = signal.status === "IN_ZONE";
-  const mounted = true;
 
-  const detectedTime = mounted
-    ? new Date(signal.timestamp).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", second: "2-digit" })
-    : "—";
-
-  const ageLabel = (() => {
-    if (!mounted) return "";
-    const secs = Math.floor(Math.max(0, now - signal.timestamp) / 1000);
-    if (secs < 60) return `${secs}s ago`;
-    const mins = Math.floor(secs / 60);
-    if (mins < 60) return `${mins}m ${secs % 60}s ago`;
-    return `${Math.floor(mins / 60)}h ${mins % 60}m ago`;
-  })();
+  const detectedTime = new Date(signal.timestamp).toLocaleString([], {
+    month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", second: "2-digit",
+  });
 
   const priceVsZone = (() => {
     if (signal.priceInZone) return { label: "IN ZONE", cls: "text-amber-400" };
@@ -433,44 +458,43 @@ const ICTSignalRow = memo(({ signal, index, now }: { signal: ICTSignal; index: n
       <TableCell className="w-10 text-center text-muted-foreground text-[11px] font-bold">{index + 1}</TableCell>
 
       {/* Coin */}
-      <TableCell className="min-w-[160px] py-3">
-        <div className="flex items-center gap-2.5">
-          <div className="w-8 h-8 rounded-full bg-muted flex-shrink-0 flex items-center justify-center overflow-hidden border border-border group-hover:border-primary/50 transition-colors">
-            {signal.image
-              ? <img src={signal.image} alt={signal.symbol} className="w-full h-full object-cover" />
-              : <span className="text-[10px] font-bold text-muted-foreground">{signal.symbol.slice(0, 2)}</span>
-            }
+      <TableCell className="min-w-0">
+        <div className="flex items-center gap-1.5 sm:gap-2.5">
+          <div className="w-6 h-6 sm:w-8 sm:h-8 rounded-full bg-muted flex-shrink-0 flex items-center justify-center overflow-hidden border border-border group-hover:border-primary/50 transition-colors">
+            <CoinIcon symbol={signal.coinId ?? symbolToCoinId(signal.symbol)} size={28} />
           </div>
-          <div className="flex flex-col">
-            <span className="font-bold text-[13px] text-foreground group-hover:text-primary transition-colors">{signal.symbol}</span>
-            <span className="text-[9px] text-muted-foreground font-medium">{signal.name}</span>
+          <div className="flex flex-col min-w-0">
+            <span className="font-bold text-[10px] sm:text-[13px] text-foreground group-hover:text-primary transition-colors truncate">{signal.symbol}</span>
+            <span className="text-[9px] text-muted-foreground font-medium hidden sm:block">{signal.name}</span>
           </div>
         </div>
       </TableCell>
 
       {/* Direction / Setup / Timeframe */}
-      <TableCell className="min-w-[160px]">
-        <div className="flex flex-col gap-1">
-          <div className="flex items-center gap-1.5 flex-wrap">
+      <TableCell className="min-w-0">
+        <div className="flex flex-col gap-0.5 sm:gap-1">
+          <div className="flex items-center gap-1 flex-wrap">
             <Badge className={cn(
-              "font-bold text-[10px] px-2 py-0.5 uppercase border-0 shadow-sm",
-              isLong ? "bg-[#0ecb81]/15 text-[#0ecb81]" : "bg-[#f6465d]/15 text-[#f6465d]",
+              "font-bold text-[9px] sm:text-[10px] px-1.5 sm:px-2 py-0.5 uppercase border-0 shadow-sm",
+              isLong
+                ? "bg-green-100 dark:bg-[#0ecb81]/15 text-green-700 dark:text-[#0ecb81]"
+                : "bg-red-100 dark:bg-[#f6465d]/15 text-red-700 dark:text-[#f6465d]",
             )}>
-              {isLong ? "LONG" : "SHORT"}
+              {isLong ? "BULL" : "BEAR"}
             </Badge>
+            <span className="text-[9px] font-black text-muted-foreground bg-muted px-1 sm:px-1.5 py-0.5 rounded border border-border">
+              {signal.timeframe.toUpperCase()}
+            </span>
+          </div>
+          <div className="hidden sm:flex items-center gap-1.5 flex-wrap">
             <Badge className={cn(
               "font-bold text-[9px] px-1.5 py-0 border-0",
-              signal.setupType === "FVG+OB" || signal.setupType.includes("BREAKER")
+              (signal.hasFVG && signal.hasOB) || signal.isBreaker
                 ? "bg-amber-500/15 text-amber-400"
                 : "bg-primary/10 text-primary",
             )}>
               {signal.setupType}
             </Badge>
-            <span className="text-[9px] font-black text-muted-foreground bg-muted px-1.5 py-0.5 rounded border border-border">
-              {signal.timeframe.toUpperCase()}
-            </span>
-          </div>
-          <div className="flex items-center gap-1.5 flex-wrap">
             <span className={cn("text-[9px] font-bold px-1.5 py-0.5 rounded", PD_COLORS[signal.premiumDiscount])}>
               {PD_LABELS[signal.premiumDiscount]}
             </span>
@@ -481,14 +505,14 @@ const ICTSignalRow = memo(({ signal, index, now }: { signal: ICTSignal; index: n
               </span>
             )}
           </div>
-          <span className="text-[9px] text-muted-foreground font-mono bg-muted/50 px-1.5 py-0.5 rounded w-fit" suppressHydrationWarning>
+          <span className="hidden sm:block text-[9px] text-muted-foreground font-mono bg-muted/50 px-1.5 py-0.5 rounded w-fit" suppressHydrationWarning>
             {detectedTime}
           </span>
         </div>
       </TableCell>
 
-      {/* ICT Grade */}
-      <TableCell>
+      {/* ICT Grade — hidden on mobile */}
+      <TableCell className="hidden sm:table-cell">
         <TooltipProvider delayDuration={0}>
           <Tooltip>
             <TooltipTrigger asChild>
@@ -516,8 +540,8 @@ const ICTSignalRow = memo(({ signal, index, now }: { signal: ICTSignal; index: n
                 { label: signal.killZone ? `Kill Zone: ${signal.killZone}` : "Kill Zone", active: !!signal.killZone },
                 { label: "Entry zone overlaps OTE fib", active: oteOverlap },
               ].map(({ label, active }) => (
-                <div key={label} className={cn("flex items-center gap-2", active ? "text-foreground" : "text-muted-foreground/40 line-through")}>
-                  <div className={cn("w-1.5 h-1.5 rounded-full flex-shrink-0", active ? "bg-primary" : "bg-muted")} />
+                <div key={label} className={cn("flex items-center gap-2", active ? "text-foreground" : "text-muted-foreground/30 line-through")}>
+                  <div className={cn("w-1.5 h-1.5 rounded-full flex-shrink-0", active ? "bg-foreground" : "bg-muted")} />
                   {label}
                 </div>
               ))}
@@ -527,26 +551,26 @@ const ICTSignalRow = memo(({ signal, index, now }: { signal: ICTSignal; index: n
       </TableCell>
 
       {/* Status */}
-      <TableCell>
+      <TableCell className="hidden md:table-cell">
         <div className="flex flex-col gap-1">
           <Badge className={cn(
             "font-bold text-[9px] px-2 py-0.5 uppercase border-0 w-fit",
-            isInZone ? "bg-amber-500/20 text-amber-400" : "bg-green-500/15 text-green-400",
+            isInZone
+              ? "bg-amber-100 dark:bg-amber-500/20 text-amber-700 dark:text-amber-400"
+              : "bg-green-100 dark:bg-green-500/15 text-green-700 dark:text-green-400",
           )}>
             {isInZone ? "IN ZONE" : "ACTIVE"}
           </Badge>
-          <span className="text-[10px] text-muted-foreground font-bold" suppressHydrationWarning>
-            {mounted ? ageLabel || "just now" : "—"}
-          </span>
+          <SignalAge ts={signal.timestamp} className="text-[10px] text-muted-foreground font-bold" />
         </div>
       </TableCell>
 
       {/* Score */}
       <TableCell>
         <div className={cn(
-          "w-11 h-11 rounded-lg flex items-center justify-center font-bold text-[15px] border-2",
-          signal.score >= 80 ? "bg-[#0ecb81]/5 text-[#0ecb81] border-[#0ecb81]/20"
-            : signal.score >= 60 ? "bg-orange-500/5 text-orange-500 border-orange-500/20"
+          "w-9 h-9 sm:w-11 sm:h-11 rounded-lg flex items-center justify-center font-bold text-[12px] sm:text-[15px] border-2",
+          signal.score >= 80 ? "bg-green-50 dark:bg-[#0ecb81]/5 text-green-700 dark:text-[#0ecb81] border-green-300 dark:border-[#0ecb81]/20"
+            : signal.score >= 60 ? "bg-orange-50 dark:bg-orange-500/5 text-orange-700 dark:text-orange-400 border-orange-300 dark:border-orange-500/20"
             : "bg-muted/50 text-muted-foreground border-border",
         )}>
           {signal.score}
@@ -554,7 +578,7 @@ const ICTSignalRow = memo(({ signal, index, now }: { signal: ICTSignal; index: n
       </TableCell>
 
       {/* Entry Zone + CE */}
-      <TableCell>
+      <TableCell className="hidden md:table-cell">
         <TooltipProvider delayDuration={0}>
           <Tooltip>
             <TooltipTrigger asChild>
@@ -604,43 +628,43 @@ const ICTSignalRow = memo(({ signal, index, now }: { signal: ICTSignal; index: n
       </TableCell>
 
       {/* SL */}
-      <TableCell className="text-right">
+      <TableCell className="hidden lg:table-cell text-right">
         <div className="flex flex-col items-end gap-0.5">
-          <span className="text-[12px] font-bold text-[#f6465d] tabular-nums">${fmt(signal.stopLoss)}</span>
-          <span className="text-[9px] font-bold text-[#f6465d]/70 tabular-nums">−{riskPct.toFixed(2)}%</span>
+          <span className="text-[12px] font-bold text-red-600 dark:text-[#f6465d] tabular-nums">${fmt(signal.stopLoss)}</span>
+          <span className="text-[9px] font-bold text-red-500 dark:text-[#f6465d]/70 tabular-nums">−{riskPct.toFixed(2)}%</span>
         </div>
       </TableCell>
 
       {/* TP */}
-      <TableCell className="text-right">
+      <TableCell className="hidden lg:table-cell text-right">
         <div className="flex flex-col items-end gap-0.5">
-          <span className="text-[12px] font-bold text-[#0ecb81] tabular-nums">${fmt(signal.takeProfit)}</span>
-          <span className="text-[9px] font-bold text-[#0ecb81]/70 tabular-nums">+{rewardPct.toFixed(2)}%</span>
+          <span className="text-[12px] font-bold text-green-600 dark:text-[#0ecb81] tabular-nums">${fmt(signal.takeProfit)}</span>
+          <span className="text-[9px] font-bold text-green-500 dark:text-[#0ecb81]/70 tabular-nums">+{rewardPct.toFixed(2)}%</span>
         </div>
       </TableCell>
 
       {/* R:R */}
-      <TableCell className="text-right">
+      <TableCell className="hidden sm:table-cell text-right">
         <TooltipProvider delayDuration={0}>
           <Tooltip>
             <TooltipTrigger asChild>
               <div className="flex flex-col items-end gap-1 cursor-help">
                 <div className={cn(
                   "inline-flex items-center justify-center px-2 h-6 rounded-md font-black text-[11px] border",
-                  signal.riskReward >= 4 ? "bg-[#0ecb81]/10 text-[#0ecb81] border-[#0ecb81]/20"
-                    : signal.riskReward >= 3 ? "bg-green-500/10 text-green-500 border-green-500/20"
-                    : "bg-orange-500/10 text-orange-500 border-orange-500/20",
+                  signal.riskReward >= 4 ? "bg-green-50 dark:bg-[#0ecb81]/10 text-green-700 dark:text-[#0ecb81] border-green-300 dark:border-[#0ecb81]/20"
+                    : signal.riskReward >= 3 ? "bg-green-50 dark:bg-green-500/10 text-green-700 dark:text-green-400 border-green-200 dark:border-green-500/20"
+                    : "bg-orange-50 dark:bg-orange-500/10 text-orange-700 dark:text-orange-400 border-orange-200 dark:border-orange-500/20",
                 )}>
                   1:{signal.riskReward}
                 </div>
                 <div className="flex items-center gap-0.5 h-2">
-                  <div className="h-2 rounded-l-full bg-[#f6465d]/60" style={{ width: `${Math.min(riskPct * 3, 24)}px`, minWidth: "4px" }} />
-                  <div className="h-2 rounded-r-full bg-[#0ecb81]/60" style={{ width: `${Math.min(rewardPct * 3, 72)}px`, minWidth: "4px" }} />
+                  <div className="h-2 rounded-l-full bg-red-400 dark:bg-[#f6465d]/60" style={{ width: `${Math.min(riskPct * 3, 24)}px`, minWidth: "4px" }} />
+                  <div className="h-2 rounded-r-full bg-green-400 dark:bg-[#0ecb81]/60" style={{ width: `${Math.min(rewardPct * 3, 72)}px`, minWidth: "4px" }} />
                 </div>
                 <div className="flex items-center gap-2 text-[9px] font-bold tabular-nums">
-                  <span className="text-[#f6465d]/80">−{riskPct.toFixed(1)}%</span>
+                  <span className="text-red-600 dark:text-[#f6465d]/80">−{riskPct.toFixed(1)}%</span>
                   <span className="text-muted-foreground/40">/</span>
-                  <span className="text-[#0ecb81]/80">+{rewardPct.toFixed(1)}%</span>
+                  <span className="text-green-600 dark:text-[#0ecb81]/80">+{rewardPct.toFixed(1)}%</span>
                 </div>
               </div>
             </TooltipTrigger>
@@ -656,8 +680,8 @@ const ICTSignalRow = memo(({ signal, index, now }: { signal: ICTSignal; index: n
       </TableCell>
 
       {/* Vol 24h */}
-      <TableCell className="text-right">
-        <span className="text-[12px] font-bold tabular-nums">${(signal.volume24h / 1e6).toFixed(0)}M</span>
+      <TableCell className="hidden lg:table-cell text-right">
+        <span className="text-[12px] font-bold tabular-nums">{fmtVol(signal.volume24h)}</span>
       </TableCell>
     </TableRow>
   );
@@ -666,7 +690,7 @@ ICTSignalRow.displayName = "ICTSignalRow";
 
 // ─── Stats Header ─────────────────────────────────────────────────────────────
 
-const StatsHeader = ({ signals }: { signals: ICTSignal[] }) => {
+const StatsHeader = memo(({ signals }: { signals: ICTSignal[] }) => {
   const longs = signals.filter(s => s.signalType === "LONG").length;
   const shorts = signals.filter(s => s.signalType === "SHORT").length;
   const inZone = signals.filter(s => s.priceInZone).length;
@@ -680,42 +704,88 @@ const StatsHeader = ({ signals }: { signals: ICTSignal[] }) => {
   const breakerCount = signals.filter(s => s.isBreaker).length;
 
   return (
-    <div className="space-y-4 mb-6">
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-        <div className="gecko-card p-4 border-l-4 border-l-[#0ecb81] bg-[#0ecb81]/5">
-          <div className="flex items-center justify-between mb-2">
-            <TrendingUp className="text-[#0ecb81]" size={20} />
-            <Badge className="bg-[#0ecb81]/20 text-[#0ecb81] text-[10px] font-bold">LONG</Badge>
+    <div className="space-y-3 mb-4">
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-2 sm:gap-3">
+        {/* Bullish */}
+        <div className="relative overflow-hidden rounded-xl border border-border bg-card px-2.5 py-2 sm:px-4 sm:py-3 flex items-center justify-between gap-2">
+          <div className="min-w-0">
+            <div className="flex items-center gap-1 mb-1">
+              <span className="text-[9px] font-black uppercase tracking-widest text-muted-foreground">Bullish</span>
+              <span className="text-[9px] font-black px-1.5 py-0.5 rounded bg-[#0ecb81]/12 text-[#0ecb81]">LONG</span>
+            </div>
+            <p className="text-[18px] sm:text-[30px] font-black tracking-tighter leading-none text-[#0ecb81]">{longs}</p>
           </div>
-          <p className="text-3xl font-black text-[#0ecb81]">{longs}</p>
-          <p className="text-[11px] font-bold text-muted-foreground uppercase">Long Setups</p>
+          <svg width="60" height="48" viewBox="0 0 72 56" fill="none" className="shrink-0 hidden sm:block text-[#0ecb81] opacity-75">
+            <rect x="4" y="44" width="12" height="12" rx="2" fill="currentColor" fillOpacity="0.2"/>
+            <rect x="20" y="32" width="12" height="24" rx="2" fill="currentColor" fillOpacity="0.4"/>
+            <rect x="36" y="18" width="12" height="38" rx="2" fill="currentColor" fillOpacity="0.65"/>
+            <rect x="52" y="6" width="12" height="50" rx="2" fill="currentColor" fillOpacity="0.9"/>
+            <polyline points="10,44 26,32 42,18 58,6" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" opacity="0.45"/>
+            <path d="M54 2L62 2L62 10" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+            <line x1="54" y1="10" x2="62" y2="2" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
+          </svg>
+          <div className="absolute bottom-0 left-0 h-[3px] w-full" style={{background:"linear-gradient(90deg,#0ecb8190,transparent)"}}/>
         </div>
-
-        <div className="gecko-card p-4 border-l-4 border-l-[#f6465d] bg-[#f6465d]/5">
-          <div className="flex items-center justify-between mb-2">
-            <TrendingDown className="text-[#f6465d]" size={20} />
-            <Badge className="bg-[#f6465d]/20 text-[#f6465d] text-[10px] font-bold">SHORT</Badge>
+        {/* Bearish */}
+        <div className="relative overflow-hidden rounded-xl border border-border bg-card px-2.5 py-2 sm:px-4 sm:py-3 flex items-center justify-between gap-2">
+          <div className="min-w-0">
+            <div className="flex items-center gap-1 mb-1">
+              <span className="text-[9px] font-black uppercase tracking-widest text-muted-foreground">Bearish</span>
+              <span className="text-[9px] font-black px-1.5 py-0.5 rounded bg-[#f6465d]/12 text-[#f6465d]">SHORT</span>
+            </div>
+            <p className="text-[18px] sm:text-[30px] font-black tracking-tighter leading-none text-[#f6465d]">{shorts}</p>
           </div>
-          <p className="text-3xl font-black text-[#f6465d]">{shorts}</p>
-          <p className="text-[11px] font-bold text-muted-foreground uppercase">Short Setups</p>
+          <svg width="60" height="48" viewBox="0 0 72 56" fill="none" className="shrink-0 hidden sm:block text-[#f6465d] opacity-75">
+            <rect x="4" y="4" width="12" height="50" rx="2" fill="currentColor" fillOpacity="0.9"/>
+            <rect x="20" y="18" width="12" height="36" rx="2" fill="currentColor" fillOpacity="0.65"/>
+            <rect x="36" y="32" width="12" height="22" rx="2" fill="currentColor" fillOpacity="0.4"/>
+            <rect x="52" y="44" width="12" height="10" rx="2" fill="currentColor" fillOpacity="0.2"/>
+            <polyline points="10,4 26,18 42,32 58,44" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" opacity="0.45"/>
+            <path d="M54 54L62 54L62 46" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+            <line x1="54" y1="46" x2="62" y2="54" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
+          </svg>
+          <div className="absolute bottom-0 left-0 h-[3px] w-full" style={{background:"linear-gradient(90deg,#f6465d90,transparent)"}}/>
         </div>
-
-        <div className="gecko-card p-4 border-l-4 border-l-amber-500 bg-amber-500/5">
-          <div className="flex items-center justify-between mb-2">
-            <AlertTriangle className="text-amber-500" size={20} />
-            <Badge className="bg-amber-500/20 text-amber-500 text-[10px] font-bold">NOW</Badge>
+        {/* In Zone */}
+        <div className="relative overflow-hidden rounded-xl border border-border bg-card px-2.5 py-2 sm:px-4 sm:py-3 flex items-center justify-between gap-2">
+          <div className="min-w-0">
+            <div className="flex items-center gap-1 mb-1">
+              <span className="text-[9px] font-black uppercase tracking-widest text-muted-foreground">In Zone</span>
+              <span className="text-[9px] font-black px-1.5 py-0.5 rounded bg-amber-500/12 text-amber-500">NOW</span>
+            </div>
+            <p className="text-[18px] sm:text-[30px] font-black tracking-tighter leading-none text-amber-500 dark:text-amber-400">{inZone}</p>
           </div>
-          <p className="text-3xl font-black text-amber-500">{inZone}</p>
-          <p className="text-[11px] font-bold text-muted-foreground uppercase">Price In Zone</p>
+          <svg width="52" height="52" viewBox="0 0 56 56" fill="none" className="shrink-0 hidden sm:block text-amber-500 opacity-80">
+            <circle cx="28" cy="28" r="24" stroke="currentColor" strokeWidth="1.5" strokeOpacity="0.2" fill="none"/>
+            <circle cx="28" cy="28" r="16" stroke="currentColor" strokeWidth="1.5" strokeOpacity="0.4" fill="none"/>
+            <circle cx="28" cy="28" r="8" stroke="currentColor" strokeWidth="2" strokeOpacity="0.7" fill="none"/>
+            <circle cx="28" cy="28" r="3" fill="currentColor"/>
+            <line x1="28" y1="2" x2="28" y2="10" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeOpacity="0.35"/>
+            <line x1="28" y1="46" x2="28" y2="54" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeOpacity="0.35"/>
+            <line x1="2" y1="28" x2="10" y2="28" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeOpacity="0.35"/>
+            <line x1="46" y1="28" x2="54" y2="28" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeOpacity="0.35"/>
+          </svg>
+          <div className="absolute bottom-0 left-0 h-[3px] w-full" style={{background:"linear-gradient(90deg,#f59e0b90,transparent)"}}/>
         </div>
-
-        <div className="gecko-card p-4 border-l-4 border-l-primary bg-primary/5">
-          <div className="flex items-center justify-between mb-2">
-            <Target className="text-primary" size={20} />
-            <Badge className="bg-primary/20 text-primary text-[10px] font-bold">TOP</Badge>
+        {/* Score 80+ */}
+        <div className="relative overflow-hidden rounded-xl border border-border bg-card px-2.5 py-2 sm:px-4 sm:py-3 flex items-center justify-between gap-2">
+          <div className="min-w-0">
+            <div className="flex items-center gap-1 mb-1">
+              <span className="text-[9px] font-black uppercase tracking-widest text-muted-foreground">Score</span>
+              <span className="text-[9px] font-black px-1.5 py-0.5 rounded bg-foreground/10 text-foreground">TOP</span>
+            </div>
+            <p className="text-[18px] sm:text-[30px] font-black tracking-tighter leading-none text-foreground">{highGrade}</p>
           </div>
-          <p className="text-3xl font-black text-primary">{highGrade}</p>
-          <p className="text-[11px] font-bold text-muted-foreground uppercase">Score ≥ 80</p>
+          <svg width="52" height="52" viewBox="0 0 56 56" fill="none" className="shrink-0 hidden sm:block text-foreground opacity-70">
+            <circle cx="28" cy="28" r="22" stroke="currentColor" strokeWidth="3" strokeOpacity="0.12" fill="none"/>
+            <circle cx="28" cy="28" r="22" stroke="currentColor" strokeWidth="3" strokeDasharray="100 38" strokeLinecap="round" fill="none" transform="rotate(-90 28 28)"/>
+            <circle cx="28" cy="28" r="13" stroke="currentColor" strokeWidth="1.5" strokeOpacity="0.18" fill="none"/>
+            <circle cx="28" cy="28" r="4" fill="currentColor" fillOpacity="0.55"/>
+            <line x1="28" y1="6" x2="28" y2="12" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeOpacity="0.35"/>
+            <line x1="50" y1="28" x2="44" y2="28" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeOpacity="0.35"/>
+            <line x1="6" y1="28" x2="12" y2="28" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeOpacity="0.35"/>
+          </svg>
+          <div className="absolute bottom-0 left-0 h-[3px] w-full bg-gradient-to-r from-foreground/40 to-transparent"/>
         </div>
       </div>
 
@@ -725,12 +795,12 @@ const StatsHeader = ({ signals }: { signals: ICTSignal[] }) => {
           <p className="text-[10px] font-black uppercase text-muted-foreground mb-2">ICT Confluence Distribution</p>
           <div className="flex flex-wrap gap-2">
             {[
-              { label: "CHoCH", count: chochCount, color: "text-purple-400 bg-purple-400/10" },
-              { label: "BOS", count: bosCount, color: "text-blue-400 bg-blue-400/10" },
-              { label: "Displacement", count: dispCount, color: "text-orange-400 bg-orange-400/10" },
-              { label: "Inducement", count: idmCount, color: "text-yellow-400 bg-yellow-400/10" },
-              { label: "Kill Zone", count: kzCount, color: "text-cyan-400 bg-cyan-400/10" },
-              { label: "Breaker", count: breakerCount, color: "text-red-400 bg-red-400/10" },
+              { label: "CHoCH",       count: chochCount,   color: "text-purple-700 dark:text-purple-300 bg-purple-100 dark:bg-purple-400/10" },
+              { label: "BOS",         count: bosCount,     color: "text-blue-700 dark:text-blue-300 bg-blue-100 dark:bg-blue-400/10" },
+              { label: "Displacement",count: dispCount,    color: "text-orange-700 dark:text-orange-300 bg-orange-100 dark:bg-orange-400/10" },
+              { label: "Inducement",  count: idmCount,     color: "text-amber-700 dark:text-amber-300 bg-amber-100 dark:bg-amber-400/10" },
+              { label: "Kill Zone",   count: kzCount,      color: "text-cyan-700 dark:text-cyan-300 bg-cyan-100 dark:bg-cyan-400/10" },
+              { label: "Breaker",     count: breakerCount, color: "text-red-700 dark:text-red-300 bg-red-100 dark:bg-red-400/10" },
             ].map(item => (
               <div key={item.label} className={cn("flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[11px] font-bold", item.color)}>
                 <span>{item.count}</span>
@@ -742,41 +812,39 @@ const StatsHeader = ({ signals }: { signals: ICTSignal[] }) => {
       )}
     </div>
   );
-};
+});
+StatsHeader.displayName = "StatsHeader";
 
 // ─── Main Terminal ─────────────────────────────────────────────────────────────
 
-type FilterType = "ALL" | "LONG" | "SHORT" | "IN_ZONE" | "HIGH_GRADE" | "CHOCH" | "KILL_ZONE";
+type FilterType = "ALL" | "CONFIRMED" | "LONG" | "SHORT" | "IN_ZONE" | "HIGH_GRADE" | "CHOCH" | "KILL_ZONE";
 
 interface ICTTerminalProps {
   initialData?: ICTSignal[];
   fetchAction?: (timeframe?: string) => Promise<ICTSignal[]>;
+  title?: string;
+  subtitle?: string;
+  mode?: "ict" | "smc";
 }
 
-export default function ICTTerminal({ initialData = [], fetchAction }: ICTTerminalProps) {
+export default function ICTTerminal({ initialData = [], fetchAction, title, subtitle, mode = "ict" }: ICTTerminalProps) {
+  const isSMC = mode === "smc";
   const [signals, setSignals] = useState<ICTSignal[]>(initialData);
-  const [loading, setLoading] = useState(initialData.length === 0);
+  const [loading, setLoading] = useState(initialData.length === 0 && !!fetchAction);
   const [refreshing, setRefreshing] = useState(false);
   const [timeframe, setTimeframe] = useState("all");
   const [search, setSearch] = useState("");
-  const [filterType, setFilterType] = useState<FilterType>("ALL");
+  const [filterType, setFilterType] = useState<FilterType>("CONFIRMED");
   const [showModal, setShowModal] = useState(false);
-  const [now, setNow] = useState(() => Date.now());
-  useEffect(() => {
-    const t = setInterval(() => setNow(Date.now()), 1000);
-    return () => clearInterval(t);
-  }, []);
+  const [page, setPage] = useState(1);
 
-  const knownIdsRef = useRef<Set<string>>(new Set());
-  const suppressNextAlertRef = useRef(true);
-
-  const signalId = (s: ICTSignal) => `${s.coinId}::${s.signalType}::${s.timeframe}::${s.sweepTimestamp}`;
-
-  const ALL_TFS = ["5m", "15m", "30m", "1h", "4h", "1d"];
-  // Suppress alerts for the first full round (all 6 TFs)
+  const knownIdsRef   = useRef<Set<string>>(new Set());
   const suppressCount = useRef(ALL_TFS.length);
+  const refreshTimers = useRef<ReturnType<typeof setTimeout>[]>([]);
 
-  const refresh = async (tf: string, manual = false) => {
+  const deferredSearch = useDeferredValue(search);
+
+  const refresh = useCallback(async (tf: string, manual = false) => {
     if (!fetchAction) return;
     if (manual) setRefreshing(true);
     try {
@@ -788,65 +856,93 @@ export default function ICTTerminal({ initialData = [], fetchAction }: ICTTermin
         suppressCount.current--;
       } else {
         const newSignals = data.filter(s => !knownIdsRef.current.has(signalId(s)));
-        data.forEach(s => knownIdsRef.current.add(signalId(s)));
+        data.forEach(s => {
+          knownIdsRef.current.add(signalId(s));
+          if (knownIdsRef.current.size > 2000) {
+            const arr = [...knownIdsRef.current];
+            knownIdsRef.current = new Set(arr.slice(arr.length - 1000));
+          }
+        });
         if (newSignals.length > 0) {
-          pushAlerts("ICT / SMC", newSignals.map(s => ({
+          pushAlerts(isSMC ? "SMC" : "ICT / SMC", newSignals.map(s => ({
             symbol: s.symbol, name: s.name, image: s.image,
             signalType: s.signalType, timeframe: s.timeframe,
             score: s.score, setupType: s.setupType,
           })));
         }
       }
-      // Merge: replace this TF's signals, keep all others
-      setSignals(prev => [...data, ...prev.filter(s => s.timeframe !== tf)]);
-    } catch (err) {
-      console.warn("[ICT] Fetch error:", err);
+
+      // Replace this TF's signals, keep other TFs, dedupe by DB id, sort by score desc
+      setSignals(prev => {
+        const others = prev.filter(s => s.timeframe !== tf);
+        const seenIds = new Set(data.map(s => s.id));
+        const merged = [...data, ...others.filter(s => !seenIds.has(s.id))];
+        return merged
+          .sort((a, b) => b.score - a.score || b.sweepTimestamp - a.sweepTimestamp)
+          .slice(0, MAX_SIGNALS);
+      });
+    } catch {
+      // silent
     } finally {
       setLoading(false);
       if (manual) setRefreshing(false);
     }
-  };
+  }, [fetchAction]);
 
-  // Poll ALL timeframes automatically — staggered to avoid burst
+  // Single fetch for all timeframes at once — one HTTP call instead of 6
   useEffect(() => {
     let cancelled = false;
-    const scanAll = (manual = false) => {
-      ALL_TFS.forEach((tf, i) => {
-        setTimeout(() => { if (!cancelled) refresh(tf, manual); }, i * 800);
-      });
-    };
+    const scanAll = () => { if (!cancelled) refresh("all"); };
     scanAll();
-    const interval = setInterval(() => scanAll(), 10_000);
-    return () => { cancelled = true; clearInterval(interval); };
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+    const interval = setInterval(scanAll, 30_000);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+      refreshTimers.current.forEach(clearTimeout);
+      refreshTimers.current = [];
+    };
+  }, [refresh]);
 
-  const handleManualRefresh = () => {
+  const handleManualRefresh = useCallback(async () => {
     setRefreshing(true);
-    const tf = timeframe === "all" ? undefined : timeframe;
-    if (tf) refresh(tf, true);
-    else ALL_TFS.forEach((t, i) => setTimeout(() => refresh(t, i === ALL_TFS.length - 1), i * 200));
-  };
+    refreshTimers.current.forEach(clearTimeout);
+    refreshTimers.current = [];
+    await refresh("all");
+    setRefreshing(false);
+  }, [refresh]);
 
-  const filtered = signals.filter(s => {
-    if (timeframe !== "all" && s.timeframe !== timeframe) return false;
-    if (filterType === "LONG" && s.signalType !== "LONG") return false;
-    if (filterType === "SHORT" && s.signalType !== "SHORT") return false;
-    if (filterType === "IN_ZONE" && !s.priceInZone) return false;
-    if (filterType === "HIGH_GRADE" && s.score < 80) return false;
-    if (filterType === "CHOCH" && !s.choch) return false;
-    if (filterType === "KILL_ZONE" && !s.killZone) return false;
-    if (!search.trim()) return true;
-    const q = search.toLowerCase();
-    return s.symbol.toLowerCase().includes(q) || s.name.toLowerCase().includes(q);
-  });
+  // Reset page when filters change
+  useEffect(() => { setPage(1); }, [deferredSearch, timeframe, filterType]);
 
-  const FILTERS: { key: FilterType; label: string }[] = [
-    { key: "ALL", label: "ALL" },
-    { key: "LONG", label: "LONG" },
-    { key: "SHORT", label: "SHORT" },
-    { key: "IN_ZONE", label: "IN ZONE" },
+  const filtered = useMemo(() => {
+    const q = deferredSearch.trim().toLowerCase();
+    return signals.filter(s => {
+      if (timeframe !== "all" && s.timeframe !== timeframe) return false;
+      if (filterType === "CONFIRMED"  && computeGrade(s) < MIN_ICT_GRADE) return false;
+      if (filterType === "LONG"       && s.signalType !== "LONG")         return false;
+      if (filterType === "SHORT"      && s.signalType !== "SHORT")        return false;
+      if (filterType === "IN_ZONE"    && !s.priceInZone)                  return false;
+      if (filterType === "HIGH_GRADE" && s.score < 80)                    return false;
+      if (filterType === "KILL_ZONE"  && !s.killZone)                     return false;
+      if (!q) return true;
+      return s.symbol.toLowerCase().includes(q) || s.name.toLowerCase().includes(q);
+    });
+  }, [signals, deferredSearch, timeframe, filterType]);
+
+  const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
+  const safePage   = Math.min(page, totalPages);
+  const pageItems  = useMemo(
+    () => filtered.slice((safePage - 1) * PAGE_SIZE, safePage * PAGE_SIZE),
+    [filtered, safePage],
+  );
+
+  const FILTERS: { key: FilterType; label: string; tip?: string }[] = [
+    { key: "CONFIRMED", label: `CONFIRMED ≥${MIN_ICT_GRADE}`, tip: `ICT grade ${MIN_ICT_GRADE}+ out of 6` },
+    { key: "ALL",       label: "ALL SIGNALS" },
+    { key: "LONG",      label: "BULLISH" },
+    { key: "SHORT",     label: "BEARISH" },
+    { key: "IN_ZONE",   label: "IN ZONE" },
     { key: "HIGH_GRADE", label: "SCORE 80+" },
-    { key: "CHOCH", label: "CHoCH" },
     { key: "KILL_ZONE", label: "KILL ZONE" },
   ];
 
@@ -854,19 +950,25 @@ export default function ICTTerminal({ initialData = [], fetchAction }: ICTTermin
     <>
       <HowItWorksModal open={showModal} onClose={() => setShowModal(false)} />
 
-      <div className="space-y-6">
+      <div className="space-y-3 sm:space-y-5">
         {/* Title bar */}
-        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+        <div className="flex flex-col md:flex-row md:items-center justify-between gap-2 sm:gap-4">
           <div>
-            <h1 className="text-lg md:text-3xl font-black text-foreground tracking-tighter uppercase leading-tight">
-              ICT / SMC SCANNER
+            <h1 className="text-[14px] sm:text-lg md:text-3xl font-black text-foreground tracking-tighter uppercase leading-tight">
+              {title ?? (isSMC ? "SMC SCANNER" : "ICT SCANNER")}
             </h1>
-            <p className="text-[10px] md:text-[12px] font-bold text-muted-foreground uppercase opacity-80">
-              Binance Futures · Complete ICT Concept · CHoCH · BOS · Displacement · Inducement · Breaker · P/D · OTE · Kill Zones
-            </p>
+            {(subtitle || !title) && (
+              <p className="text-[9px] sm:text-[10px] md:text-[12px] font-bold text-foreground/60 uppercase opacity-80">
+                {subtitle ?? (isSMC
+                  ? "Smart Money Concepts · Supply/Demand · BOS/CHoCH · Liquidity · Structure"
+                  : "Inner Circle Trader · Kill Zones · OTE · AMD · Order Blocks · Displacement"
+                )}
+              </p>
+            )}
           </div>
 
           <div className="flex items-center gap-2 flex-wrap">
+            <div className="overflow-x-auto no-scrollbar">
             <div className="flex bg-muted rounded-lg p-1 border border-border">
               {["all", "5m", "15m", "30m", "1h", "4h", "1d"].map(tf => (
                 <button
@@ -874,24 +976,25 @@ export default function ICTTerminal({ initialData = [], fetchAction }: ICTTermin
                   onClick={() => setTimeframe(tf)}
                   className={cn(
                     "px-3 py-1 text-[11px] font-bold rounded-md transition-all whitespace-nowrap",
-                    timeframe === tf ? "bg-background text-primary shadow-sm" : "text-muted-foreground hover:text-foreground",
+                    timeframe === tf ? "bg-background text-foreground font-black shadow-sm" : "text-muted-foreground hover:text-foreground",
                   )}
                 >
                   {tf.toUpperCase()}
                 </button>
               ))}
             </div>
+            </div>
 
             <Button variant="outline" size="sm" onClick={() => setShowModal(true)} className="h-8 gap-2 text-[11px] font-bold">
               <BookOpen size={13} />
-              <span className="hidden sm:inline">ICT Guide</span>
+              <span className="hidden sm:inline">{isSMC ? "SMC Guide" : "ICT Guide"}</span>
             </Button>
 
             <div className="flex items-center gap-2">
               {refreshing ? (
                 <><div className="h-2 w-2 rounded-full bg-primary animate-pulse" /><span className="text-[11px] text-muted-foreground font-medium hidden sm:inline">Updating...</span></>
               ) : (
-                <><div className="h-2 w-2 rounded-full bg-green-500 animate-pulse" /><span className="text-[11px] text-muted-foreground font-medium hidden sm:inline">Live · 10s</span></>
+                <><div className="h-2 w-2 rounded-full bg-green-500 animate-pulse" /><span className="text-[11px] text-muted-foreground font-medium hidden sm:inline">Live · 30s</span></>
               )}
             </div>
 
@@ -899,7 +1002,7 @@ export default function ICTTerminal({ initialData = [], fetchAction }: ICTTermin
               <RefreshCw size={14} className={cn(refreshing && "animate-spin")} />
             </Button>
 
-            <AlertsButton page="ICT / SMC" />
+            <AlertsButton page={isSMC ? "SMC" : "ICT / SMC"} />
           </div>
         </div>
 
@@ -907,14 +1010,14 @@ export default function ICTTerminal({ initialData = [], fetchAction }: ICTTermin
         <StatsHeader signals={filtered} />
 
         {/* Strategy legend */}
-        <div className="gecko-card rounded-xl p-4 border border-border bg-card/50">
-          <div className="flex flex-wrap gap-x-5 gap-y-2 text-[11px] font-bold text-muted-foreground">
+        <div className="hidden sm:block gecko-card rounded-xl p-4 border border-border bg-card/50">
+          <div className="flex flex-wrap gap-x-3 gap-y-1.5 text-[10px] sm:text-[11px] font-bold text-muted-foreground">
             <span className="flex items-center gap-1.5"><TrendingUp size={12} className="text-[#0ecb81]" />LONG = bullish structure + sweep of lows</span>
             <span className="flex items-center gap-1.5"><TrendingDown size={12} className="text-[#f6465d]" />SHORT = bearish structure + sweep of highs</span>
             <span className="flex items-center gap-1.5"><AlertTriangle size={12} className="text-amber-500" />IN ZONE = price inside FVG/OB — watch for rejection candle</span>
-            <span className="flex items-center gap-1.5 text-purple-400">CHoCH = prior structure reversed</span>
-            <span className="flex items-center gap-1.5 text-blue-400">BOS = structure confirmed</span>
-            <span className="flex items-center gap-1.5 text-orange-400">DISP = displacement present</span>
+            <span className="flex items-center gap-1.5 text-purple-700 dark:text-purple-300">CHoCH = prior structure reversed</span>
+            <span className="flex items-center gap-1.5 text-blue-700 dark:text-blue-300">BOS = structure confirmed</span>
+            <span className="flex items-center gap-1.5 text-orange-700 dark:text-orange-300">DISP = displacement present</span>
             <button onClick={() => setShowModal(true)} className="flex items-center gap-1.5 text-primary hover:underline">
               <BookOpen size={12} />Full ICT guide →
             </button>
@@ -922,31 +1025,38 @@ export default function ICTTerminal({ initialData = [], fetchAction }: ICTTermin
         </div>
 
         {/* Filters */}
-        <div className="flex items-center gap-3 flex-wrap">
-          <div className="flex bg-muted rounded-lg p-1 border border-border flex-wrap gap-0.5">
+        <div className="flex items-center gap-2 sm:gap-3 flex-wrap">
+          <div className="overflow-x-auto no-scrollbar">
+          <div className="flex bg-muted rounded-lg p-1 border border-border gap-0.5 w-max">
             {FILTERS.map(f => (
               <button
                 key={f.key}
                 onClick={() => setFilterType(f.key)}
+                title={f.tip}
                 className={cn(
                   "px-3 py-1 text-[11px] font-bold rounded-md transition-all whitespace-nowrap",
-                  filterType === f.key ? "bg-background text-primary shadow-sm" : "text-muted-foreground hover:text-foreground",
+                  filterType === f.key
+                    ? f.key === "CONFIRMED"
+                      ? "bg-foreground text-background shadow-sm"
+                      : "bg-background text-foreground border border-border shadow-sm"
+                    : "text-muted-foreground hover:text-foreground",
                 )}
               >
                 {f.label}
               </button>
             ))}
           </div>
+          </div>
 
-          <div className="relative flex-1 max-w-sm">
+          <div className="relative flex-1 max-w-full sm:max-w-sm">
             <input
               type="text"
               placeholder="Search symbol..."
               value={search}
               onChange={e => setSearch(e.target.value)}
-              className="w-full h-9 pl-9 pr-4 rounded-lg border border-border bg-background text-sm focus:outline-none focus:ring-1 focus:ring-primary"
+              className="w-full h-8 pl-8 pr-3 rounded-lg border border-border bg-background text-[12px] focus:outline-none focus:ring-1 focus:ring-primary"
             />
-            <Target size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
+            <Target size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-foreground" />
           </div>
 
           <span className="text-[11px] text-muted-foreground font-medium">
@@ -961,59 +1071,107 @@ export default function ICTTerminal({ initialData = [], fetchAction }: ICTTermin
               {Array.from({ length: 6 }).map((_, i) => <Skeleton key={i} className="h-14 w-full rounded-lg" />)}
             </div>
           ) : filtered.length === 0 ? (
-            <div className="p-12 text-center">
+            <div className="p-8 sm:p-12 text-center">
               <Target size={40} className="mx-auto mb-4 text-muted-foreground/30" />
               <p className="text-sm font-bold text-muted-foreground">
-                No ICT setups{timeframe !== "all" ? ` on ${timeframe.toUpperCase()}` : ""}
-                {filterType !== "ALL" ? ` matching filter "${FILTERS.find(f => f.key === filterType)?.label}"` : ""}
+                No confirmed ICT setups{timeframe !== "all" ? ` on ${timeframe.toUpperCase()}` : ""}
+                {filterType === "CONFIRMED" ? ` with grade ≥ ${MIN_ICT_GRADE}/6` : filterType !== "ALL" ? ` matching "${FILTERS.find(f => f.key === filterType)?.label}"` : ""}
               </p>
               <p className="text-[11px] text-muted-foreground/60 mt-1">
-                Scanner checks 50 coins across all 6 timeframes every 10 seconds
+                Only showing confirmed setups: Sweep + Displacement + Entry Zone + Structure confirmed (≥{MIN_ICT_GRADE}/6 confluences)
               </p>
             </div>
           ) : (
-            <div className="overflow-x-auto">
-              <Table>
-                <TableHeader>
-                  <TableRow className="gecko-table-header">
-                    <TableHead className="w-10 text-center text-[10px] font-black uppercase">#</TableHead>
-                    <TableHead className="text-[10px] font-black uppercase">Coin</TableHead>
-                    <TableHead className="text-[10px] font-black uppercase">
-                      <HeaderTip title="Signal" tip="Direction (LONG/SHORT), setup type, timeframe, P/D position, and active kill zone." />
-                    </TableHead>
-                    <TableHead className="text-[10px] font-black uppercase">
-                      <HeaderTip title="ICT Grade" tip="Confirmed ICT confluences: CHoCH, BOS, Displacement, Inducement, Kill Zone. Hover for detail. Bar shows how many of 6 are active." />
-                    </TableHead>
-                    <TableHead className="text-[10px] font-black uppercase">Status</TableHead>
-                    <TableHead className="text-[10px] font-black uppercase">Score</TableHead>
-                    <TableHead className="text-right text-[10px] font-black uppercase">
-                      <HeaderTip title="Entry Zone" tip="FVG/OB/Breaker range. CE = 50% (Consequent Encroachment — most magnetic). Hover for OTE fib zone and dealing range." right />
-                    </TableHead>
-                    <TableHead className="text-right text-[10px] font-black uppercase">Price</TableHead>
-                    <TableHead className="text-right text-[10px] font-black uppercase">
-                      <HeaderTip title="SL / Risk%" tip="Stop Loss beyond sweep wick (0.2%). % is distance from zone midpoint to SL." right />
-                    </TableHead>
-                    <TableHead className="text-right text-[10px] font-black uppercase">
-                      <HeaderTip title="TP / Reward%" tip="Take Profit at nearest opposing liquidity. % is distance from zone midpoint to TP." right />
-                    </TableHead>
-                    <TableHead className="text-right text-[10px] font-black uppercase">
-                      <HeaderTip title="R:R" tip="Risk:Reward ratio + visual bar. Hover for exact %. Green = 1:4+, Orange = 1:3+. Min 1:1.5 shown." right />
-                    </TableHead>
-                    <TableHead className="text-right text-[10px] font-black uppercase">Vol 24h</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {filtered.map((signal, i) => (
-                    <ICTSignalRow
-                      key={`${signal.coinId}-${signal.sweepTimestamp}`}
-                      signal={signal}
-                      index={i}
-                      now={now}
-                    />
-                  ))}
-                </TableBody>
-              </Table>
-            </div>
+            <>
+              <div className="overflow-x-auto">
+                <Table>
+                  <TableHeader>
+                    <TableRow className="gecko-table-header">
+                      <TableHead className="w-10 text-center text-[10px] font-black uppercase">#</TableHead>
+                      <TableHead className="text-[10px] font-black uppercase">Coin</TableHead>
+                      <TableHead className="text-[10px] font-black uppercase">
+                        <HeaderTip title="Signal" tip="Direction (LONG/SHORT), setup type, timeframe, P/D position, and active kill zone." />
+                      </TableHead>
+                      <TableHead className="hidden sm:table-cell text-[10px] font-black uppercase">
+                        <HeaderTip title={isSMC ? "SMC Grade" : "ICT Grade"} tip={isSMC ? "Confirmed SMC confluences: BOS, CHoCH, Supply/Demand zone, Displacement, FVG, Equal H/L, Mitigation. Bar shows how many of 6 are active." : "Confirmed ICT confluences: CHoCH, BOS, Displacement, Inducement, Kill Zone. Hover for detail. Bar shows how many of 6 are active."} />
+                      </TableHead>
+                      <TableHead className="hidden md:table-cell text-[10px] font-black uppercase">Status</TableHead>
+                      <TableHead className="text-[10px] font-black uppercase">Score</TableHead>
+                      <TableHead className="hidden md:table-cell text-right text-[10px] font-black uppercase">
+                        <HeaderTip title="Entry Zone" tip="FVG/OB/Breaker range. CE = 50% (Consequent Encroachment — most magnetic). Hover for OTE fib zone and dealing range." right />
+                      </TableHead>
+                      <TableHead className="text-right text-[10px] font-black uppercase">Price</TableHead>
+                      <TableHead className="hidden lg:table-cell text-right text-[10px] font-black uppercase">
+                        <HeaderTip title="SL / Risk%" tip="Stop Loss beyond sweep wick (0.2%). % is distance from zone midpoint to SL." right />
+                      </TableHead>
+                      <TableHead className="hidden lg:table-cell text-right text-[10px] font-black uppercase">
+                        <HeaderTip title="TP / Reward%" tip="Take Profit at nearest opposing liquidity. % is distance from zone midpoint to TP." right />
+                      </TableHead>
+                      <TableHead className="hidden sm:table-cell text-right text-[10px] font-black uppercase">
+                        <HeaderTip title="R:R" tip="Risk:Reward ratio + visual bar. Hover for exact %. Green = 1:4+, Orange = 1:3+. Min 1:1.5 shown." right />
+                      </TableHead>
+                      <TableHead className="hidden lg:table-cell text-right text-[10px] font-black uppercase">Vol 24h</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {pageItems.map((signal, i) => (
+                      <ICTSignalRow
+                        key={signal.id}
+                        signal={signal}
+                        index={(safePage - 1) * PAGE_SIZE + i}
+                      />
+                    ))}
+                  </TableBody>
+                </Table>
+              </div>
+
+              {/* Pagination */}
+              {totalPages > 1 && (
+                <div className="flex flex-wrap items-center justify-between px-4 py-3 border-t border-border bg-muted/20 gap-2">
+                  <span className="text-[11px] text-muted-foreground">
+                    {filtered.length} setups · page {safePage} of {totalPages}
+                  </span>
+                  <div className="flex items-center gap-1">
+                    <button
+                      onClick={() => setPage(1)}
+                      disabled={safePage === 1}
+                      className="px-2 py-1 text-[11px] font-bold rounded border border-border disabled:opacity-30 hover:bg-muted transition-colors"
+                    >«</button>
+                    <button
+                      onClick={() => setPage(p => Math.max(1, p - 1))}
+                      disabled={safePage === 1}
+                      className="px-2 py-1 text-[11px] font-bold rounded border border-border disabled:opacity-30 hover:bg-muted transition-colors"
+                    >‹</button>
+                    {Array.from({ length: Math.min(5, totalPages) }, (_, idx) => {
+                      const start = Math.max(1, Math.min(safePage - 2, totalPages - 4));
+                      const p = start + idx;
+                      return (
+                        <button
+                          key={p}
+                          onClick={() => setPage(p)}
+                          className={cn(
+                            "w-7 h-7 text-[11px] font-bold rounded border transition-colors",
+                            p === safePage
+                              ? "bg-primary text-primary-foreground border-primary"
+                              : "border-border text-muted-foreground hover:bg-muted",
+                          )}
+                        >{p}</button>
+                      );
+                    })}
+                    <button
+                      onClick={() => setPage(p => Math.min(totalPages, p + 1))}
+                      disabled={safePage === totalPages}
+                      className="px-2 py-1 text-[11px] font-bold rounded border border-border disabled:opacity-30 hover:bg-muted transition-colors"
+                    >›</button>
+                    <button
+                      onClick={() => setPage(totalPages)}
+                      disabled={safePage === totalPages}
+                      className="px-2 py-1 text-[11px] font-bold rounded border border-border disabled:opacity-30 hover:bg-muted transition-colors"
+                    >»</button>
+                  </div>
+                </div>
+              )}
+            </>
           )}
         </div>
       </div>

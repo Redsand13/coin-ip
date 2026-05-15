@@ -31,7 +31,9 @@ class BacktestRun(Base):
     params: Mapped[dict] = mapped_column(JSONB, default=dict)
 
     # Status
-    status: Mapped[BacktestStatus] = mapped_column(Enum(BacktestStatus), default=BacktestStatus.PENDING)
+    status: Mapped[BacktestStatus] = mapped_column(
+        Enum(BacktestStatus, native_enum=False, length=20), default=BacktestStatus.PENDING
+    )
     error: Mapped[str | None] = mapped_column(String(500))
 
     # Aggregate results
@@ -51,7 +53,7 @@ class BacktestRun(Base):
     summary: Mapped[dict | None] = mapped_column(JSONB)
 
     trades: Mapped[list["BacktestTrade"]] = relationship(
-        "BacktestTrade", back_populates="run", lazy="dynamic"
+        "BacktestTrade", back_populates="run", lazy="noload"
     )
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

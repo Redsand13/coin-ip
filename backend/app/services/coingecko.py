@@ -1,82 +1,111 @@
-"""Async CoinGecko client with caching."""
+"""
+Fetches CoinGecko market data and upserts it into the cg_cache table.
+Called by the scheduler every 2 minutes — users never hit CoinGecko directly.
+"""
 import asyncio
-from typing import Any
 
 import httpx
-from tenacity import AsyncRetrying, retry_if_exception_type, stop_after_attempt, wait_exponential
 
-from app.config import settings
 from app.core.logging import get_logger
+from app.database import AsyncSessionFactory
+from app.models.coingecko import CgCache
 
 logger = get_logger(__name__)
 
+_BASE = "https://api.coingecko.com/api/v3"
+_TIMEOUT = httpx.Timeout(10.0, connect=5.0)
 
-class CoinGeckoClient:
-    def __init__(self) -> None:
-        self._client: httpx.AsyncClient | None = None
 
-    async def __aenter__(self) -> "CoinGeckoClient":
-        headers = {}
-        if settings.COINGECKO_API_KEY:
-            headers["x-cg-pro-api-key"] = settings.COINGECKO_API_KEY
-        self._client = httpx.AsyncClient(
-            base_url=settings.COINGECKO_BASE_URL,
-            timeout=httpx.Timeout(15.0),
-            headers=headers,
-        )
-        return self
+async def refresh_coingecko_cache() -> None:
+    async with httpx.AsyncClient(timeout=_TIMEOUT, headers={"Accept": "application/json"}) as client:
+        trending_raw, markets_raw = await _fetch_both(client)
 
-    async def __aexit__(self, *args: Any) -> None:
-        if self._client:
-            await self._client.aclose()
+    trending = _parse_trending(trending_raw)
+    gainers, losers = _parse_markets(markets_raw)
 
-    async def get_top_coins(self, limit: int = 250, currency: str = "usd") -> list[dict]:
-        pages = (limit + 249) // 250
-        results: list[dict] = []
-        for page in range(1, pages + 1):
-            data = await self._get("/coins/markets", params={
-                "vs_currency": currency,
-                "order": "market_cap_desc",
-                "per_page": min(250, limit - len(results)),
-                "page": page,
-                "sparkline": False,
-                "price_change_percentage": "1h,24h,7d",
-            })
-            results.extend(data)
-            if len(results) >= limit:
-                break
-            await asyncio.sleep(1.5)
-        return results
+    async with AsyncSessionFactory() as session:
+        for key, payload in [
+            ("trending", {"coins": trending}),
+            ("gainers",  {"coins": gainers}),
+            ("losers",   {"coins": losers}),
+        ]:
+            row = await session.get(CgCache, key)
+            if row:
+                row.payload = payload
+            else:
+                session.add(CgCache(key=key, payload=payload))
+        await session.commit()
 
-    async def get_ohlc(self, coin_id: str, days: int = 30, currency: str = "usd") -> list[list]:
-        """Returns [[timestamp, open, high, low, close], ...]"""
-        return await self._get(f"/coins/{coin_id}/ohlc", params={
-            "vs_currency": currency,
-            "days": days,
+    logger.info("CoinGecko cache refreshed",
+                trending=len(trending), gainers=len(gainers), losers=len(losers))
+
+
+async def _fetch_both(client: httpx.AsyncClient):
+    async def _get(url: str):
+        try:
+            r = await client.get(url)
+            if r.status_code == 429:
+                logger.warning("CoinGecko rate limited", url=url)
+                return None
+            r.raise_for_status()
+            return r.json()
+        except Exception as exc:
+            logger.warning("CoinGecko fetch failed", url=url, error=str(exc))
+            return None
+
+    return await asyncio.gather(
+        _get(f"{_BASE}/search/trending"),
+        _get(
+            f"{_BASE}/coins/markets"
+            "?vs_currency=usd"
+            "&order=price_change_percentage_24h_desc"
+            "&per_page=20"
+            "&sparkline=true"
+            "&price_change_percentage=24h"
+        ),
+    )
+
+
+def _parse_trending(raw) -> list:
+    if not raw:
+        return []
+    out = []
+    for c in (raw.get("coins", []))[:10]:
+        item = c.get("item", {})
+        out.append({
+            "item": {
+                "id":              item.get("id"),
+                "name":            item.get("name"),
+                "symbol":          item.get("symbol"),
+                "thumb":           item.get("thumb"),
+                "market_cap_rank": item.get("market_cap_rank"),
+                "data": {
+                    "price": item.get("data", {}).get("price"),
+                    "price_change_percentage_24h": item.get("data", {}).get("price_change_percentage_24h"),
+                },
+            }
         })
+    return out
 
-    async def get_coin_info(self, coin_id: str) -> dict:
-        return await self._get(f"/coins/{coin_id}", params={
-            "localization": False,
-            "tickers": False,
-            "market_data": True,
-            "community_data": False,
-            "developer_data": False,
-        })
 
-    async def _get(self, path: str, params: dict | None = None) -> Any:
-        assert self._client
-        async for attempt in AsyncRetrying(
-            stop=stop_after_attempt(3),
-            wait=wait_exponential(multiplier=1.5, min=2, max=30),
-            retry=retry_if_exception_type((httpx.HTTPError, httpx.TimeoutException)),
-            reraise=True,
-        ):
-            with attempt:
-                resp = await self._client.get(path, params=params)
-                if resp.status_code == 429:
-                    logger.warning("CoinGecko rate limit hit")
-                    await asyncio.sleep(60)
-                    resp = await self._client.get(path, params=params)
-                resp.raise_for_status()
-                return resp.json()
+def _parse_markets(raw) -> tuple[list, list]:
+    if not isinstance(raw, list):
+        return [], []
+
+    keep = {
+        "id", "symbol", "name", "image",
+        "current_price", "price_change_percentage_24h",
+        "market_cap", "total_volume", "sparkline_in_7d",
+    }
+    coins = [{k: v for k, v in c.items() if k in keep} for c in raw]
+
+    gainers = sorted(
+        [c for c in coins if (c.get("price_change_percentage_24h") or 0) > 0],
+        key=lambda c: c.get("price_change_percentage_24h", 0), reverse=True,
+    )[:7]
+    losers = sorted(
+        [c for c in coins if (c.get("price_change_percentage_24h") or 0) < 0],
+        key=lambda c: c.get("price_change_percentage_24h", 0),
+    )[:7]
+
+    return gainers, losers

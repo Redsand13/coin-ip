@@ -4,10 +4,11 @@ import * as React from "react";
 import { useState, useEffect, useCallback, useRef } from "react";
 import { X, TrendingUp, TrendingDown, Target, Zap, Bell, BellOff, BellRing } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { CoinIcon, symbolToCoinId } from "@/components/CoinIcon";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-export type AlertPage = "Binance Futures" | "ICT / SMC";
+export type AlertPage = "Futures" | "ICT / SMC" | "SMC";
 
 export interface SignalAlert {
   id: string;
@@ -125,7 +126,8 @@ async function fireNativeNotification(alert: SignalAlert) {
   const emoji = isBull ? "🟢" : "🔴";
   const pageLabel = alert.page === "ICT / SMC" ? "ICT/SMC" : "Binance";
 
-  const title = `${emoji} ${alert.symbol} ${alert.signalType}  |  Score ${alert.score}`;
+  const direction = (alert.signalType === "BUY" || alert.signalType === "LONG") ? "BULLISH" : "BEARISH";
+  const title = `${emoji} ${alert.symbol} ${direction}  |  Score ${alert.score}`;
   const lines: string[] = [
     `📊 ${alert.name}`,
     `⏱  Timeframe: ${alert.timeframe.toUpperCase()}`,
@@ -165,13 +167,13 @@ async function fireNativeNotification(alert: SignalAlert) {
 const LS_KEY = "coinpree_alert_prefs_v1";
 
 function loadPersistedEnabled(): Record<AlertPage, boolean> {
-  if (typeof window === "undefined") return { "Binance Futures": false, "ICT / SMC": false };
+  if (typeof window === "undefined") return { "Futures": false, "ICT / SMC": false, "SMC": false };
   try {
     const raw = localStorage.getItem(LS_KEY);
-    if (!raw) return { "Binance Futures": false, "ICT / SMC": false };
+    if (!raw) return { "Futures": false, "ICT / SMC": false, "SMC": false };
     return JSON.parse(raw) as Record<AlertPage, boolean>;
   } catch {
-    return { "Binance Futures": false, "ICT / SMC": false };
+    return { "Futures": false, "ICT / SMC": false, "SMC": false };
   }
 }
 
@@ -197,7 +199,7 @@ const countListeners   = new Set<CountListener>();
 
 let globalAlerts: SignalAlert[] = [];
 let globalPerm: PermState = "default";
-const globalCount: Record<AlertPage, number> = { "Binance Futures": 0, "ICT / SMC": 0 };
+const globalCount: Record<AlertPage, number> = { "Futures": 0, "ICT / SMC": 0, "SMC": 0 };
 
 function broadcastAlerts()  { alertListeners.forEach(fn => fn([...globalAlerts])); }
 function broadcastPerm()    { permListeners.forEach(fn => fn(globalPerm)); }
@@ -365,10 +367,7 @@ function AlertCard({ alert, onDismiss }: { alert: SignalAlert; onDismiss: () => 
         {/* Coin row */}
         <div className="flex items-center gap-3">
           <div className="w-9 h-9 rounded-full bg-muted flex-shrink-0 flex items-center justify-center overflow-hidden border border-border">
-            {alert.image
-              ? <img src={alert.image} alt={alert.symbol} className="w-full h-full object-cover" loading="lazy" />
-              : <span className="text-[10px] font-bold text-muted-foreground">{alert.symbol.slice(0, 2)}</span>
-            }
+            <CoinIcon symbol={symbolToCoinId(alert.symbol)} size={36} />
           </div>
 
           <div className="flex-1 min-w-0">
@@ -376,7 +375,7 @@ function AlertCard({ alert, onDismiss }: { alert: SignalAlert; onDismiss: () => 
               <span className="font-black text-[15px] text-foreground leading-none">{alert.symbol}</span>
               <span className="text-[10px] font-bold px-2 py-0.5 rounded-full"
                 style={{ background: `${accent}20`, color: accent }}>
-                {alert.signalType}
+                {isBull ? "BULLISH" : "BEARISH"}
               </span>
               <span className="text-[10px] font-black tabular-nums ml-auto" style={{ color: accent }}>
                 {alert.score}
@@ -431,7 +430,7 @@ export function SignalAlertContainer() {
     // in a previous session. If permission was revoked, clear persisted state.
     if (perm === "granted") {
       const saved = loadPersistedEnabled();
-      const pages: AlertPage[] = ["Binance Futures", "ICT / SMC"];
+      const pages: AlertPage[] = ["Futures", "ICT / SMC", "SMC"];
       pages.forEach(p => {
         if (saved[p] && !pageEnabled[p]) {
           pageEnabled[p] = true;
@@ -440,11 +439,13 @@ export function SignalAlertContainer() {
       });
     } else if (perm === "denied") {
       // Permission was revoked externally — clear saved prefs
-      pageEnabled["Binance Futures"] = false;
+      pageEnabled["Futures"] = false;
       pageEnabled["ICT / SMC"] = false;
+      pageEnabled["SMC"] = false;
       persistEnabled(pageEnabled);
-      broadcastEnabled("Binance Futures");
+      broadcastEnabled("Futures");
       broadcastEnabled("ICT / SMC");
+      broadcastEnabled("SMC");
     }
   }, []);
 

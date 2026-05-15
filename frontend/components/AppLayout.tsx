@@ -6,18 +6,17 @@ import {
   Zap,
   Sun,
   Moon,
-  Settings,
   Activity,
   TrendingUp,
   Target,
-  Database
+  Database,
+  Home,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
 import { usePathname } from "next/navigation";
 import Link from "next/link";
-// ... imports
 
 export default function AppLayout({ children }: { children: React.ReactNode }) {
   const { theme, setTheme } = useTheme();
@@ -31,14 +30,14 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
   return (
     <div className="flex flex-col h-screen bg-background text-foreground overflow-hidden font-sans">
       {/* Top Bar */}
-      <header className="h-[52px] border-b border-border bg-[var(--header-bg)] flex items-center px-6 z-50 shrink-0 transition-colors duration-200">
+      <header className="h-[52px] border-b border-border bg-[var(--header-bg)] flex items-center px-3 sm:px-6 z-50 shrink-0 transition-colors duration-200">
         {/* Logo Area */}
         <div className="flex items-center gap-3">
           <div className="w-9 h-9 rounded-lg bg-gradient-to-br from-primary to-primary/70 flex items-center justify-center text-white shrink-0 shadow-lg shadow-primary/20">
             <Zap className="w-5 h-5 fill-current" />
           </div>
           <div className="flex flex-col">
-            <span className="font-black text-[var(--header-text)] text-[18px] tracking-tight leading-none">
+            <span className="font-black text-[var(--header-text)] text-[15px] sm:text-[18px] tracking-tight leading-none">
               Coinpree
             </span>
             <span className="text-[9px] font-bold text-[var(--header-subtext)] uppercase tracking-widest">
@@ -48,29 +47,16 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
         </div>
 
         {/* Vertical Divider */}
-        <div className="h-8 w-px bg-border mx-6" />
+        <div className="hidden sm:block h-8 w-px bg-border mx-6" />
 
         {/* Navigation */}
         <div className="hidden md:flex items-center gap-1 mr-6">
-          <Link href="/coingecko">
+          <Link href="/ema3crossover">
             <Button
-              variant={pathname === "/coingecko" ? "secondary" : "ghost"}
+              variant={pathname === "/ema3crossover" ? "secondary" : "ghost"}
               className={cn(
                 "h-8 text-[12px] font-bold px-3",
-                pathname === "/coingecko"
-                  ? "bg-primary/10 text-primary hover:bg-primary/15"
-                  : "text-muted-foreground hover:text-foreground"
-              )}
-            >
-              CoinGecko Market
-            </Button>
-          </Link>
-          <Link href="/binance">
-            <Button
-              variant={pathname === "/binance" ? "secondary" : "ghost"}
-              className={cn(
-                "h-8 text-[12px] font-bold px-3",
-                pathname === "/binance"
+                pathname === "/ema3crossover"
                   ? "bg-primary/10 text-primary hover:bg-primary/15"
                   : "text-muted-foreground hover:text-foreground"
               )}
@@ -88,7 +74,20 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
                   : "text-muted-foreground hover:text-foreground"
               )}
             >
-              ICT / SMC
+              ICT
+            </Button>
+          </Link>
+          <Link href="/smc">
+            <Button
+              variant={pathname === "/smc" ? "secondary" : "ghost"}
+              className={cn(
+                "h-8 text-[12px] font-bold px-3",
+                pathname === "/smc"
+                  ? "bg-primary/10 text-primary hover:bg-primary/15"
+                  : "text-muted-foreground hover:text-foreground"
+              )}
+            >
+              SMC
             </Button>
           </Link>
           <Link href="/history">
@@ -126,15 +125,6 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
             {mounted ? (theme === "dark" ? <Sun size={18} /> : <Moon size={18} />) : <Sun size={18} />}
           </Button>
 
-          <Button
-            variant="ghost"
-            size="icon"
-            className="h-9 w-9 text-[var(--header-subtext)] hover:text-[var(--header-text)] hover:bg-[var(--header-search-bg)] rounded-lg transition-colors"
-          >
-            <Settings size={18} />
-          </Button>
-
-          <div className="h-8 w-px bg-border mx-2" />
         </div>
       </header >
 
@@ -142,7 +132,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
         {/* Main Content Area */}
         <div className="flex-1 flex flex-col overflow-hidden bg-background">
           {/* Content Viewport */}
-          <main className="flex-1 overflow-y-auto p-4 md:p-8 pb-20 md:pb-8 space-y-8 bg-background scroll-smooth">
+          <main className="flex-1 overflow-y-auto p-3 sm:p-4 md:p-6 lg:p-8 pb-20 md:pb-8 space-y-4 md:space-y-6 bg-background scroll-smooth">
             <div className="max-w-[1600px] mx-auto">{children}</div>
           </main>
 
@@ -168,33 +158,40 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
       </div>
 
       {/* Mobile Bottom Navigation */}
-      <div className="md:hidden fixed bottom-0 left-0 right-0 h-16 bg-card border-t border-border flex items-center justify-around z-50 px-4 pb-safe">
-        <Link href="/coingecko" className="flex flex-col items-center gap-1 w-full h-full justify-center">
-          <div className={cn("p-1.5 rounded-lg transition-colors", pathname === "/coingecko" ? "bg-primary/10 text-primary" : "text-muted-foreground")}>
-            <Activity size={20} className={cn(pathname === "/coingecko" && "fill-current")} />
+      <div className="md:hidden fixed bottom-0 left-0 right-0 h-16 bg-card border-t border-border flex items-center justify-around z-50 px-2 pb-safe">
+        <Link href="/" className="flex flex-col items-center gap-0.5 w-full h-full justify-center">
+          <div className={cn("p-1.5 rounded-lg transition-colors", pathname === "/" ? "bg-primary/10 text-primary" : "text-muted-foreground")}>
+            <Home size={18} className={cn(pathname === "/" && "fill-current")} />
           </div>
-          <span className={cn("text-[10px] font-bold", pathname === "/coingecko" ? "text-primary" : "text-muted-foreground")}>CoinGecko Market</span>
+          <span className={cn("text-[9px] font-bold", pathname === "/" ? "text-primary" : "text-muted-foreground")}>Home</span>
         </Link>
 
-        <Link href="/binance" className="flex flex-col items-center gap-1 w-full h-full justify-center">
-          <div className={cn("p-1.5 rounded-lg transition-colors", pathname === "/binance" ? "bg-primary/10 text-primary" : "text-muted-foreground")}>
-            <TrendingUp size={20} className={cn(pathname === "/binance" && "fill-current")} />
+        <Link href="/ema3crossover" className="flex flex-col items-center gap-0.5 w-full h-full justify-center">
+          <div className={cn("p-1.5 rounded-lg transition-colors", pathname === "/ema3crossover" ? "bg-primary/10 text-primary" : "text-muted-foreground")}>
+            <TrendingUp size={18} className={cn(pathname === "/ema3crossover" && "fill-current")} />
           </div>
-          <span className={cn("text-[10px] font-bold", pathname === "/binance" ? "text-primary" : "text-muted-foreground")}>EMA 3 Cross</span>
+          <span className={cn("text-[9px] font-bold", pathname === "/ema3crossover" ? "text-primary" : "text-muted-foreground")}>EMA</span>
         </Link>
 
-        <Link href="/ict" className="flex flex-col items-center gap-1 w-full h-full justify-center">
+        <Link href="/ict" className="flex flex-col items-center gap-0.5 w-full h-full justify-center">
           <div className={cn("p-1.5 rounded-lg transition-colors", pathname === "/ict" ? "bg-primary/10 text-primary" : "text-muted-foreground")}>
-            <Target size={20} className={cn(pathname === "/ict" && "fill-current")} />
+            <Target size={18} className={cn(pathname === "/ict" && "fill-current")} />
           </div>
-          <span className={cn("text-[10px] font-bold", pathname === "/ict" ? "text-primary" : "text-muted-foreground")}>ICT / SMC</span>
+          <span className={cn("text-[9px] font-bold", pathname === "/ict" ? "text-primary" : "text-muted-foreground")}>ICT</span>
         </Link>
 
-        <Link href="/history" className="flex flex-col items-center gap-1 w-full h-full justify-center">
-          <div className={cn("p-1.5 rounded-lg transition-colors", pathname === "/history" ? "bg-primary/10 text-primary" : "text-muted-foreground")}>
-            <Database size={20} />
+        <Link href="/smc" className="flex flex-col items-center gap-0.5 w-full h-full justify-center">
+          <div className={cn("p-1.5 rounded-lg transition-colors", pathname === "/smc" ? "bg-primary/10 text-primary" : "text-muted-foreground")}>
+            <Activity size={18} className={cn(pathname === "/smc" && "fill-current")} />
           </div>
-          <span className={cn("text-[10px] font-bold", pathname === "/history" ? "text-primary" : "text-muted-foreground")}>Database</span>
+          <span className={cn("text-[9px] font-bold", pathname === "/smc" ? "text-primary" : "text-muted-foreground")}>SMC</span>
+        </Link>
+
+        <Link href="/history" className="flex flex-col items-center gap-0.5 w-full h-full justify-center">
+          <div className={cn("p-1.5 rounded-lg transition-colors", pathname === "/history" ? "bg-primary/10 text-primary" : "text-muted-foreground")}>
+            <Database size={18} />
+          </div>
+          <span className={cn("text-[9px] font-bold", pathname === "/history" ? "text-primary" : "text-muted-foreground")}>Database</span>
         </Link>
       </div>
     </div >

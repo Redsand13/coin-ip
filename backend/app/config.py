@@ -39,20 +39,20 @@ class Settings(BaseSettings):
     BINANCE_WS_URL: str = "wss://fstream.binance.com"
     BINANCE_API_KEY: str = ""
     BINANCE_SECRET: str = ""
-    BINANCE_REQUEST_LIMIT: int = 5          # concurrent requests
-    BINANCE_RATE_LIMIT_DELAY: float = 0.12  # seconds between batches
+    BINANCE_REQUEST_LIMIT: int = 3          # concurrent requests
+    BINANCE_RATE_LIMIT_DELAY: float = 0.5  # seconds between symbol requests
 
     # ── CoinGecko ────────────────────────────────────────────────────────────
     COINGECKO_BASE_URL: str = "https://api.coingecko.com/api/v3"
     COINGECKO_API_KEY: str = ""
 
     # ── Scanner ──────────────────────────────────────────────────────────────
-    SCANNER_INTERVAL_SECONDS: int = 30
+    SCANNER_INTERVAL_SECONDS: int = 60     # 1 minute — fast refresh, top symbols only
     TIMEFRAMES: list[str] = ["5m", "15m", "30m", "1h", "4h", "1d"]
     EMA_FAST: int = 7
     EMA_MID: int = 25
     EMA_SLOW: int = 99
-    MAX_SYMBOLS_PER_SCAN: int = 300
+    MAX_SYMBOLS_PER_SCAN: int = 75         # top 75 by volume — half the requests, 2× faster
 
     # ── ML ───────────────────────────────────────────────────────────────────
     ML_MODEL_PATH: str = "models/signal_scorer.joblib"
@@ -71,9 +71,13 @@ class Settings(BaseSettings):
     @field_validator("ALLOWED_ORIGINS", mode="before")
     @classmethod
     def parse_origins(cls, v: str | list) -> list[str]:
-        if isinstance(v, str):
-            return [o.strip() for o in v.split(",")]
-        return v
+        if isinstance(v, list):
+            return v
+        v = v.strip()
+        if v.startswith("["):
+            import json
+            return json.loads(v)
+        return [o.strip() for o in v.split(",") if o.strip()]
 
 
 @lru_cache

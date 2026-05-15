@@ -9,16 +9,16 @@ import type {
   DbSignal,
 } from "@/lib/types/signals";
 
-const API_BASE =
-  process.env.BACKEND_URL ?? "http://localhost:8000";
 
-const API_KEY = process.env.BACKEND_API_KEY ?? "";
+const API_BASE = process.env.BACKEND_URL ?? "http://localhost:8000";
+const API_KEY  = process.env.BACKEND_API_KEY ?? "";
 
 // ── Shared fetch wrapper ───────────────────────────────────────────────────────
 
 async function apiFetch<T>(
   path: string,
-  options: RequestInit & { params?: Record<string, string | number | boolean | undefined> } = {}
+  options: RequestInit & { params?: Record<string, string | number | boolean | undefined> } = {},
+  timeoutMs = 15_000,
 ): Promise<T> {
   const { params, ...init } = options;
 
@@ -29,28 +29,36 @@ async function apiFetch<T>(
     }
   }
 
-  const res = await fetch(url.toString(), {
-    ...init,
-    headers: {
-      "Content-Type": "application/json",
-      "X-API-Key": API_KEY,
-      ...(init.headers ?? {}),
-    },
-    next: { revalidate: 0 },   // always fresh — signals change every 30s
-  });
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
 
-  if (!res.ok) {
-    const body = await res.text().catch(() => "");
-    throw new Error(`FastAPI ${res.status} ${res.statusText}: ${path} — ${body}`);
+  try {
+    const res = await fetch(url.toString(), {
+      ...init,
+      headers: {
+        "Content-Type": "application/json",
+        "X-API-Key": API_KEY,
+        ...(init.headers ?? {}),
+      },
+      signal: controller.signal,
+      next: { revalidate: 0 },
+    });
+
+    if (!res.ok) {
+      const body = await res.text().catch(() => "");
+      throw new Error(`FastAPI ${res.status} ${res.statusText}: ${path} — ${body}`);
+    }
+
+    return res.json() as Promise<T>;
+  } finally {
+    clearTimeout(timer);
   }
-
-  return res.json() as Promise<T>;
 }
 
 // ── Signal endpoints ───────────────────────────────────────────────────────────
 
 export interface SignalQueryParams {
-  source?: "binance" | "coingecko" | "ict";
+  source?: "binance" | "coingecko" | "ict" | "smc";
   direction?: "LONG" | "SHORT";
   timeframe?: string;
   symbol?: string;
@@ -58,6 +66,10 @@ export interface SignalQueryParams {
   min_confluence?: number;
   limit?: number;
   offset?: number;
+  latest_per_coin?: boolean;
+  skip_count?: boolean;
+  from_ts?: number;   // epoch ms — bypasses the backend 48h default window
+  to_ts?: number;
 }
 
 export async function fetchSignals(
@@ -66,6 +78,16 @@ export async function fetchSignals(
   return apiFetch<ApiSignalPage>("/api/v1/signals", {
     params: params as Record<string, string | number | boolean | undefined>,
   });
+}
+
+export async function fetchCoinGeckoMarket(): Promise<{
+  trending: unknown[];
+  gainers: unknown[];
+  losers: unknown[];
+  rateLimited: boolean;
+  stale: boolean;
+}> {
+  return apiFetch("/api/v1/coingecko/market");
 }
 
 export async function fetchTopSignals(limit = 50): Promise<ApiSignal[]> {
@@ -98,13 +120,15 @@ export async function recordOutcome(
 
 export interface HistoryQueryParams {
   source?: string;
+  direction?: "LONG" | "SHORT";
   timeframe?: string;
   minScore?: number;
-  fromTs?: number;   // epoch ms
-  toTs?: number;
+  fromTs?: number;       // epoch ms
+  toTs?: number;         // epoch ms
   search?: string;
   page?: number;
   pageSize?: number;
+  latestPerCoin?: boolean;
 }
 
 export async function fetchHistory(
@@ -119,9 +143,13 @@ export async function fetchHistory(
     offset,
   };
   if (opts.source && opts.source !== "all") params.source = opts.source;
+  if (opts.direction) params.direction = opts.direction;
   if (opts.timeframe && opts.timeframe !== "all") params.timeframe = opts.timeframe;
-  if (opts.minScore !== undefined) params.min_ml_score = opts.minScore / 100;
+  if (opts.minScore !== undefined && opts.minScore > 0) params.min_ml_score = opts.minScore / 100;
   if (opts.search) params.symbol = opts.search;
+  if (opts.fromTs) params.from_ts = opts.fromTs;
+  if (opts.toTs) params.to_ts = opts.toTs;
+  if (opts.latestPerCoin) params.latest_per_coin = true;
 
   const data = await apiFetch<ApiSignalPage>("/api/v1/signals", { params });
 
@@ -174,11 +202,6 @@ export async function triggerBinanceScan(): Promise<{ status: string }> {
   });
 }
 
-export async function triggerCoinGeckoScan(): Promise<{ status: string }> {
-  return apiFetch<{ status: string }>("/api/v1/scanner/trigger/coingecko", {
-    method: "POST",
-  });
-}
 
 export async function fetchScannerStatus(): Promise<{
   running: boolean;
@@ -223,6 +246,12 @@ export async function fetchSignalsCsv(
   );
 
   return [headers.join(","), ...rows].join("\n");
+}
+
+// ── Exchange availability ──────────────────────────────────────────────────────
+
+export async function fetchFuturesExchangeSymbols(): Promise<Record<string, string[]>> {
+  return apiFetch<Record<string, string[]>>("/api/v1/exchanges/futures-symbols");
 }
 
 // ── Health ────────────────────────────────────────────────────────────────────

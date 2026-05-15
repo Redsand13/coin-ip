@@ -1,7 +1,7 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
-  reactStrictMode: false,
+  reactStrictMode: true,
 
   compress: true,
 
@@ -24,6 +24,8 @@ const nextConfig: NextConfig = {
       "@radix-ui/react-avatar",
       "@radix-ui/react-dialog",
       "@radix-ui/react-dropdown-menu",
+      "@radix-ui/react-popover",
+      "@radix-ui/react-scroll-area",
       "@radix-ui/react-separator",
       "@radix-ui/react-slot",
       "@radix-ui/react-tabs",

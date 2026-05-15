@@ -1,5 +1,4 @@
-"""APScheduler-based background task runner."""
-import asyncio
+"""APScheduler background task runner + WebSocket lifecycle."""
 from datetime import datetime, timezone
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -13,6 +12,14 @@ logger = get_logger(__name__)
 _scheduler: AsyncIOScheduler | None = None
 
 
+async def _refresh_coingecko() -> None:
+    from app.services.coingecko import refresh_coingecko_cache
+    try:
+        await refresh_coingecko_cache()
+    except Exception as exc:
+        logger.error("CoinGecko cache refresh failed", error=str(exc))
+
+
 async def _run_binance_scan() -> None:
     from app.services.scanner import SignalScanner
     scanner = SignalScanner()
@@ -23,22 +30,10 @@ async def _run_binance_scan() -> None:
         logger.error("Binance scan job failed", error=str(exc))
 
 
-async def _run_coingecko_scan() -> None:
-    from app.services.scanner import SignalScanner
-    scanner = SignalScanner()
-    try:
-        n = await scanner.run_coingecko_scan()
-        logger.info("CoinGecko scan job complete", saved=n)
-    except Exception as exc:
-        logger.error("CoinGecko scan job failed", error=str(exc))
-
-
 async def _retrain_ml() -> None:
-    """Pull labelled signals from DB and retrain the ML model."""
-    from app.algorithms.ml_scorer import MLScorer, _FEATURE_COLS
+    from app.algorithms.ml_scorer import MLScorer
     from app.database import AsyncSessionFactory
-    from sqlalchemy import select, text
-    from app.models.signal import Signal
+    from sqlalchemy import text
     import pandas as pd
 
     async with AsyncSessionFactory() as session:
@@ -62,7 +57,6 @@ async def _retrain_ml() -> None:
     df = pd.DataFrame(rows)
     df["label"] = (df["outcome_pnl"] > 0).astype(int)
 
-    # Expand ml_features JSON into columns
     if "ml_features" in df.columns:
         feats = df["ml_features"].apply(lambda x: x if isinstance(x, dict) else {})
         feat_df = pd.DataFrame(feats.tolist())
@@ -75,8 +69,22 @@ async def _retrain_ml() -> None:
 
 async def start_scheduler() -> None:
     global _scheduler
+
+    # Start Binance miniTicker WS — provides live momentum ranking
+    from app.services.binance_ws import get_stream_manager
+    ws = get_stream_manager()
+    await ws.start()
+    logger.info("Binance WebSocket stream manager started")
+
+    # Start real-time EMA watchdog — detects crossovers at candle close, 24/7
+    from app.services.ema_watchdog import get_ema_watchdog
+    watchdog = get_ema_watchdog()
+    await watchdog.start()
+    logger.info("EMA real-time watchdog started")
+
     _scheduler = AsyncIOScheduler(timezone="UTC")
 
+    # Binance REST scan — uses WS ranking, only fetches candles for top symbols
     _scheduler.add_job(
         _run_binance_scan,
         trigger=IntervalTrigger(seconds=settings.SCANNER_INTERVAL_SECONDS),
@@ -85,13 +93,18 @@ async def start_scheduler() -> None:
         coalesce=True,
         next_run_time=datetime.now(timezone.utc),
     )
+
+    # CoinGecko market cache — fetch once, serve all users from DB
     _scheduler.add_job(
-        _run_coingecko_scan,
-        trigger=IntervalTrigger(minutes=5),
-        id="coingecko_scan",
+        _refresh_coingecko,
+        trigger=IntervalTrigger(minutes=2),
+        id="coingecko_cache",
         max_instances=1,
         coalesce=True,
+        next_run_time=datetime.now(timezone.utc),  # run immediately on startup
     )
+
+    # ML retrain on labelled outcomes
     _scheduler.add_job(
         _retrain_ml,
         trigger=IntervalTrigger(hours=settings.ML_RETRAIN_HOURS),
@@ -105,5 +118,12 @@ async def start_scheduler() -> None:
 
 async def stop_scheduler() -> None:
     global _scheduler
+
+    from app.services.binance_ws import get_stream_manager
+    await get_stream_manager().stop()
+
+    from app.services.ema_watchdog import get_ema_watchdog
+    await get_ema_watchdog().stop()
+
     if _scheduler and _scheduler.running:
         _scheduler.shutdown(wait=False)

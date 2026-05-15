@@ -1,7 +1,7 @@
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
-from fastapi.responses import ORJSONResponse
+from fastapi.responses import ORJSONResponse, Response
 from prometheus_fastapi_instrumentator import Instrumentator
 
 from app.api.v1 import api_v1
@@ -22,8 +22,8 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.ALLOWED_ORIGINS,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Content-Type", "X-API-Key", "Authorization", "Accept"],
 )
 app.add_middleware(GZipMiddleware, minimum_size=1000)
 
@@ -36,6 +36,37 @@ Instrumentator(
 
 # ── Routers ───────────────────────────────────────────────────────────────────
 app.include_router(api_v1)
+
+
+# Root endpoint — API info
+@app.get("/", include_in_schema=False, response_class=ORJSONResponse)
+async def root() -> dict:
+    return {"name": settings.APP_NAME, "version": settings.APP_VERSION, "docs": "/docs"}
+
+
+# Silence browser favicon requests
+@app.get("/favicon.ico", include_in_schema=False)
+async def favicon() -> Response:
+    return Response(status_code=204)
+
+
+# Root-level /health for load balancers / Docker healthchecks / uptime monitors
+@app.get("/health", include_in_schema=False, response_class=ORJSONResponse)
+async def root_health() -> dict:
+    from app.database import check_db_health
+    from app.core.redis import check_redis_health
+    from app.core.logging import get_logger
+    _log = get_logger("health")
+    db_ok    = await check_db_health()
+    redis_ok = await check_redis_health()
+    status = "ok" if (db_ok and redis_ok) else "degraded"
+    if status == "degraded":
+        _log.warning("Health degraded", db=db_ok, redis=redis_ok)
+    return {
+        "status": status,
+        "db":    "ok" if db_ok    else "error",
+        "redis": "ok" if redis_ok else "error",
+    }
 
 
 # ── Error handlers ────────────────────────────────────────────────────────────
