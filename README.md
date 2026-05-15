@@ -129,3 +129,4 @@ Open http://localhost:3000
 | `BACKEND_URL` | FastAPI URL (default `http://localhost:8000`) |
 | `BACKEND_API_KEY` | Must match `API_KEY` in `backend/.env` |
 | `SIGNAL_HISTORY_KEY` | Password for the /history page |
+# coinpy
