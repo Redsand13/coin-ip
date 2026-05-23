@@ -11,6 +11,7 @@ import {
   Target,
   Database,
   Home,
+  BarChart3,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -88,6 +89,19 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
               )}
             >
               SMC
+            </Button>
+          </Link>
+          <Link href="/derivatives">
+            <Button
+              variant={pathname === "/derivatives" ? "secondary" : "ghost"}
+              className={cn(
+                "h-8 text-[12px] font-bold px-3",
+                pathname === "/derivatives"
+                  ? "bg-primary/10 text-primary hover:bg-primary/15"
+                  : "text-muted-foreground hover:text-foreground"
+              )}
+            >
+              Market Sentiment
             </Button>
           </Link>
           <Link href="/history">
@@ -187,11 +201,11 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
           <span className={cn("text-[9px] font-bold", pathname === "/smc" ? "text-primary" : "text-muted-foreground")}>SMC</span>
         </Link>
 
-        <Link href="/history" className="flex flex-col items-center gap-0.5 w-full h-full justify-center">
-          <div className={cn("p-1.5 rounded-lg transition-colors", pathname === "/history" ? "bg-primary/10 text-primary" : "text-muted-foreground")}>
-            <Database size={18} />
+        <Link href="/derivatives" className="flex flex-col items-center gap-0.5 w-full h-full justify-center">
+          <div className={cn("p-1.5 rounded-lg transition-colors", pathname === "/derivatives" ? "bg-primary/10 text-primary" : "text-muted-foreground")}>
+            <BarChart3 size={18} className={cn(pathname === "/derivatives" && "fill-current")} />
           </div>
-          <span className={cn("text-[9px] font-bold", pathname === "/history" ? "text-primary" : "text-muted-foreground")}>Database</span>
+          <span className={cn("text-[9px] font-bold", pathname === "/derivatives" ? "text-primary" : "text-muted-foreground")}>Sentiment</span>
         </Link>
       </div>
     </div >

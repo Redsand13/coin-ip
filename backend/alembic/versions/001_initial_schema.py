@@ -1,4 +1,4 @@
-"""Initial schema — signals, assets, backtest tables
+"""Initial schema — signals, assets
 
 Revision ID: 001
 Revises:
@@ -81,60 +81,7 @@ def upgrade() -> None:
         sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.func.now()),
     )
 
-    # ── backtest_runs ─────────────────────────────────────────────────────────
-    op.create_table(
-        "backtest_runs",
-        sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True),
-        sa.Column("name", sa.String(100)),
-        sa.Column("strategy", sa.String(50)),
-        sa.Column("symbol", sa.String(20)),
-        sa.Column("timeframe", sa.String(5)),
-        sa.Column("start_date", sa.DateTime(timezone=True)),
-        sa.Column("end_date", sa.DateTime(timezone=True)),
-        sa.Column("params", postgresql.JSONB),
-        sa.Column("status", sa.String(20), default="pending"),
-        sa.Column("error", sa.String(500)),
-        sa.Column("total_trades", sa.Integer, default=0),
-        sa.Column("winning_trades", sa.Integer, default=0),
-        sa.Column("losing_trades", sa.Integer, default=0),
-        sa.Column("win_rate", sa.Float),
-        sa.Column("total_pnl", sa.Float),
-        sa.Column("max_drawdown", sa.Float),
-        sa.Column("sharpe_ratio", sa.Float),
-        sa.Column("profit_factor", sa.Float),
-        sa.Column("avg_win", sa.Float),
-        sa.Column("avg_loss", sa.Float),
-        sa.Column("expectancy", sa.Float),
-        sa.Column("max_consecutive_losses", sa.Integer),
-        sa.Column("equity_curve", postgresql.JSONB),
-        sa.Column("summary", postgresql.JSONB),
-        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now()),
-        sa.Column("completed_at", sa.DateTime(timezone=True)),
-    )
-
-    # ── backtest_trades ───────────────────────────────────────────────────────
-    op.create_table(
-        "backtest_trades",
-        sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True),
-        sa.Column("run_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("backtest_runs.id", ondelete="CASCADE")),
-        sa.Column("symbol", sa.String(20)),
-        sa.Column("direction", sa.String(5)),
-        sa.Column("entry_time", sa.DateTime(timezone=True)),
-        sa.Column("exit_time", sa.DateTime(timezone=True)),
-        sa.Column("entry_price", sa.Float),
-        sa.Column("exit_price", sa.Float),
-        sa.Column("take_profit", sa.Float),
-        sa.Column("stop_loss", sa.Float),
-        sa.Column("pnl_pct", sa.Float),
-        sa.Column("pnl_abs", sa.Float),
-        sa.Column("exit_reason", sa.String(20)),
-        sa.Column("bars_held", sa.Integer),
-    )
-    op.create_index("ix_backtest_trades_run_id", "backtest_trades", ["run_id"])
-
 
 def downgrade() -> None:
-    op.drop_table("backtest_trades")
-    op.drop_table("backtest_runs")
     op.drop_table("assets")
     op.drop_table("signals")

@@ -415,11 +415,12 @@ function computeGrade(s: ICTSignal): number {
     : false;
   return [
     s.hasSweep,
-    s.displacement,           // hasDisplacement alias
-    s.hasOB || s.hasFVG,      // entry zone present
-    s.bos    || s.choch,      // structure confirmed
-    !!s.killZone,             // in kill zone
-    s.hasInducement,          // IDM present
+    s.displacement,
+    s.hasOB || s.hasFVG,
+    s.bos    || s.choch,
+    !!s.killZone,
+    s.hasInducement,
+    oteOverlap,
   ].filter(Boolean).length;
 }
 
@@ -817,7 +818,7 @@ StatsHeader.displayName = "StatsHeader";
 
 // ─── Main Terminal ─────────────────────────────────────────────────────────────
 
-type FilterType = "ALL" | "CONFIRMED" | "LONG" | "SHORT" | "IN_ZONE" | "HIGH_GRADE" | "CHOCH" | "KILL_ZONE";
+type FilterType = "ALL" | "CONFIRMED" | "LONG" | "SHORT" | "IN_ZONE" | "HIGH_GRADE" | "KILL_ZONE";
 
 interface ICTTerminalProps {
   initialData?: ICTSignal[];
@@ -937,7 +938,7 @@ export default function ICTTerminal({ initialData = [], fetchAction, title, subt
   );
 
   const FILTERS: { key: FilterType; label: string; tip?: string }[] = [
-    { key: "CONFIRMED", label: `CONFIRMED ≥${MIN_ICT_GRADE}`, tip: `ICT grade ${MIN_ICT_GRADE}+ out of 6` },
+    { key: "CONFIRMED", label: `CONFIRMED ≥${MIN_ICT_GRADE}`, tip: `ICT grade ${MIN_ICT_GRADE}+ out of 7` },
     { key: "ALL",       label: "ALL SIGNALS" },
     { key: "LONG",      label: "BULLISH" },
     { key: "SHORT",     label: "BEARISH" },

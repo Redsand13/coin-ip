@@ -9,16 +9,18 @@ Architecture
 1. Startup: seed 200-candle history from REST for top-N symbols × 6 TFs
 2. Connect to TWO combined kline streams (30 symbols each, 180 streams/conn)
    to watch up to 60 symbols simultaneously within Binance's per-connection limit
-3. On closed candle (k.x == true): append to rolling buffer, run EMAStrategy,
-   persist + publish via Redis immediately if a crossover is detected
-4. Auto-reconnect with exponential backoff on disconnect
-5. Refresh watched symbols every 4 hours from the momentum WS ranking
+3. On live candle tick: throttled check every 10 s — fires the instant a crossover
+   is detected without waiting for candle close
+4. On closed candle (k.x == true): permanent buffer append + final crossover check
+5. Auto-reconnect with exponential backoff on disconnect
+6. Refresh watched symbols every 4 hours from the momentum WS ranking
 
 The periodic REST scanner (every 60 s) acts as a safety net for anything
 missed during reconnection windows.
 """
 import asyncio
 import json
+import time
 from collections import deque
 from datetime import datetime, timezone
 
@@ -36,6 +38,7 @@ _STREAMS_PER_CONN     = 180    # safe cap (Binance hard limit = 200)
 _SYMS_PER_CONN        = _STREAMS_PER_CONN // len(settings.TIMEFRAMES or ["5m","15m","30m","1h","4h","1d"])
 _MAX_SYMBOLS          = _SYMS_PER_CONN * 2   # 2 connections = 60 symbols (30 each @ 6 TFs)
 _SYMBOL_REFRESH_HOURS = 4      # refresh watched symbols every N hours
+_LIVE_CHECK_INTERVAL  = 10.0   # seconds between live-candle crossover checks per symbol/TF
 
 _ema_strategy = EMAStrategy(settings.EMA_FAST, settings.EMA_MID, settings.EMA_SLOW)
 
@@ -54,6 +57,7 @@ class EMAWatchdog:
         self._refresh_task: asyncio.Task | None = None
         self._running = False
         self._db_sem = asyncio.Semaphore(4)
+        self._last_live_check: dict[tuple[str, str], float] = {}
 
     # ── Lifecycle ─────────────────────────────────────────────────────────────
 
@@ -233,12 +237,11 @@ class EMAWatchdog:
         if data.get("e") != "kline":
             return
         k = data["k"]
-        if not k.get("x"):
-            return  # candle not yet closed
 
-        symbol = k["s"]
-        tf     = k["i"]
-        key    = (symbol, tf)
+        symbol    = k["s"]
+        tf        = k["i"]
+        key       = (symbol, tf)
+        is_closed = bool(k.get("x", False))
 
         candle = {
             "open_time": datetime.fromtimestamp(k["t"] / 1000, tz=timezone.utc),
@@ -251,19 +254,43 @@ class EMAWatchdog:
 
         if key not in self._buffers:
             self._buffers[key] = deque(maxlen=_BUFFER_SIZE)
-        self._buffers[key].append(candle)
 
-        asyncio.create_task(
-            self._check_crossover(symbol, tf, key),
-            name=f"ema_check_{symbol}_{tf}",
-        )
+        if is_closed:
+            # Permanent: commit the finished candle to the buffer
+            self._buffers[key].append(candle)
+            asyncio.create_task(
+                self._check_crossover(symbol, tf, key, live_candle=None),
+                name=f"ema_check_{symbol}_{tf}",
+            )
+        else:
+            # Live candle: throttle checks to once per _LIVE_CHECK_INTERVAL seconds
+            # so we don't spawn a task on every single WebSocket tick (~1 s).
+            now = time.monotonic()
+            if now - self._last_live_check.get(key, 0.0) >= _LIVE_CHECK_INTERVAL:
+                self._last_live_check[key] = now
+                asyncio.create_task(
+                    self._check_crossover(symbol, tf, key, live_candle=candle),
+                    name=f"ema_live_{symbol}_{tf}",
+                )
 
-    async def _check_crossover(self, symbol: str, tf: str, key: tuple) -> None:
+    async def _check_crossover(
+        self,
+        symbol: str,
+        tf: str,
+        key: tuple,
+        live_candle: dict | None,
+    ) -> None:
         buf = self._buffers.get(key)
         if not buf or len(buf) < _ema_strategy.slow + 50:
             return
 
-        df = pd.DataFrame(list(buf))
+        # Append the live (open) candle to get a real-time EMA reading.
+        # For a closed-candle check live_candle is None so nothing is appended.
+        rows = list(buf)
+        if live_candle is not None:
+            rows = rows + [live_candle]
+
+        df = pd.DataFrame(rows)
         sig = _ema_strategy.scan(symbol, tf, df)
         if not sig:
             return
@@ -276,6 +303,7 @@ class EMAWatchdog:
         logger.info(
             "⚡ Real-time EMA crossover",
             symbol=symbol, tf=tf, direction=sig.direction, price=sig.price,
+            live=live_candle is not None,
         )
 
         async with self._db_sem:

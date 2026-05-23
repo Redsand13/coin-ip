@@ -20,15 +20,20 @@ async def refresh_coingecko_cache() -> None:
     async with httpx.AsyncClient(timeout=_TIMEOUT, headers={"Accept": "application/json"}) as client:
         trending_raw, markets_raw = await _fetch_both(client)
 
-    trending = _parse_trending(trending_raw)
-    gainers, losers = _parse_markets(markets_raw)
+    if trending_raw is None and markets_raw is None:
+        logger.warning("CoinGecko both endpoints failed — keeping existing cache")
+        return
+
+    updates: list[tuple[str, dict]] = []
+    if trending_raw is not None:
+        updates.append(("trending", {"coins": _parse_trending(trending_raw)}))
+    if markets_raw is not None:
+        gainers, losers = _parse_markets(markets_raw)
+        updates.append(("gainers", {"coins": gainers}))
+        updates.append(("losers",  {"coins": losers}))
 
     async with AsyncSessionFactory() as session:
-        for key, payload in [
-            ("trending", {"coins": trending}),
-            ("gainers",  {"coins": gainers}),
-            ("losers",   {"coins": losers}),
-        ]:
+        for key, payload in updates:
             row = await session.get(CgCache, key)
             if row:
                 row.payload = payload
@@ -37,7 +42,7 @@ async def refresh_coingecko_cache() -> None:
         await session.commit()
 
     logger.info("CoinGecko cache refreshed",
-                trending=len(trending), gainers=len(gainers), losers=len(losers))
+                updated=[k for k, _ in updates])
 
 
 async def _fetch_both(client: httpx.AsyncClient):

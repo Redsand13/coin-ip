@@ -37,16 +37,6 @@ async def _migrate_native_enums() -> None:
                     ALTER COLUMN direction TYPE VARCHAR(10) USING direction::TEXT;
             END IF;
 
-            -- backtest_runs.status
-            IF EXISTS (
-                SELECT 1 FROM information_schema.columns
-                WHERE table_name = 'backtest_runs'
-                  AND column_name = 'status'
-                  AND data_type = 'USER-DEFINED'
-            ) THEN
-                ALTER TABLE backtest_runs
-                    ALTER COLUMN status TYPE VARCHAR(20) USING status::TEXT;
-            END IF;
         END $$;
     """)
 
@@ -56,7 +46,6 @@ async def _migrate_native_enums() -> None:
         for drop_sql in (
             "DROP TYPE IF EXISTS signalsource   CASCADE",
             "DROP TYPE IF EXISTS signaldirection CASCADE",
-            "DROP TYPE IF EXISTS backteststatus  CASCADE",
         ):
             await conn.execute(text(drop_sql))
 

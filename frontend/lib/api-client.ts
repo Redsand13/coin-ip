@@ -254,6 +254,24 @@ export async function fetchFuturesExchangeSymbols(): Promise<Record<string, stri
   return apiFetch<Record<string, string[]>>("/api/v1/exchanges/futures-symbols");
 }
 
+// ── Derivatives ───────────────────────────────────────────────────────────────
+
+export type DerivativeSymbol = {
+  symbol: string;
+  markPrice: number;
+  fundingRate: number;
+  openInterest: number;
+  longShortRatio: number | null;
+};
+
+export async function fetchDerivatives(): Promise<{
+  symbols: DerivativeSymbol[];
+  stale: boolean;
+  updatedAt: string | null;
+}> {
+  return apiFetch("/api/v1/derivatives");
+}
+
 // ── Health ────────────────────────────────────────────────────────────────────
 
 export async function fetchHealth(): Promise<{

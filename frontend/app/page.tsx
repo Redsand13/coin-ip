@@ -5,8 +5,9 @@ import Link from "next/link";
 import { cn } from "@/lib/utils";
 import { CoinIcon } from "@/components/CoinIcon";
 import type { ApiSignal } from "@/lib/types/signals";
-import { getHomeDataAction, getCoinGeckoDataAction, getFearGreedAction, getMarketGlobalAction } from "@/app/actions";
+import { getHomeDataAction, getCoinGeckoDataAction, getFearGreedAction, getMarketGlobalAction, getDerivativesAction } from "@/app/actions";
 import type { CGTrendingItem, CGMarketCoin } from "@/app/actions";
+import type { DerivativeSymbol } from "@/lib/api-client";
 
 // ─── Formatters ───────────────────────────────────────────────────────────────
 
@@ -595,6 +596,121 @@ function SK({ w, h = 12, rounded, className }: { w?: number | string; h?: number
   return <div className={cn("animate-pulse bg-muted", rounded ? "rounded-full" : "rounded", className)} style={{ width: w, height: h }} />;
 }
 
+// ─── Derivatives Widget ────────────────────────────────────────────────────────
+
+function DerivativesWidget({ data, loading }: { data: DerivativeSymbol[]; loading: boolean }) {
+  function fmtOI(v: number) {
+    if (v >= 1e9) return `$${(v / 1e9).toFixed(2)}B`;
+    if (v >= 1e6) return `$${(v / 1e6).toFixed(1)}M`;
+    return `$${(v / 1e3).toFixed(0)}K`;
+  }
+  function fmtFunding(v: number) {
+    const sign = v >= 0 ? "+" : "";
+    return `${sign}${(v * 100).toFixed(4)}%`;
+  }
+  function fundColor(v: number) {
+    const p = v * 100;
+    if (p > 0.05) return "#f87171";
+    if (p > 0.01) return "#fb923c";
+    if (p > 0)    return "#fbbf24";
+    if (p > -0.01) return "#22d3ee";
+    if (p > -0.05) return "#60a5fa";
+    return "#818cf8";
+  }
+
+  const topOI      = loading ? [] : [...data].sort((a, b) => b.openInterest - a.openInterest).slice(0, 5);
+  const topFunding = loading ? [] : [...data].sort((a, b) => Math.abs(b.fundingRate) - Math.abs(a.fundingRate)).slice(0, 5);
+  const totalOI    = data.reduce((s, r) => s + r.openInterest, 0);
+  const avgFunding = data.length ? data.reduce((s, r) => s + r.fundingRate, 0) / data.length : 0;
+
+  const skeleton = (
+    <div className="space-y-1.5 px-3 pb-3">
+      {Array.from({ length: 5 }).map((_, i) => (
+        <div key={i} className="h-7 animate-pulse bg-muted rounded-lg" />
+      ))}
+    </div>
+  );
+
+  const empty = (
+    <p className="text-[10px] text-muted-foreground text-center py-4 px-3">
+      Waiting for first cache refresh…
+    </p>
+  );
+
+  return (
+    <div className="rounded-2xl border border-border bg-card overflow-hidden">
+
+      {/* ── Open Interest ── */}
+      <div className="px-3 sm:px-4 pt-2.5 pb-0 flex items-center justify-between">
+        <span className="text-[9px] sm:text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">Open Interest</span>
+        {!loading && data.length > 0 && (
+          <span className="text-[9px] font-medium px-1.5 py-0.5 rounded-full bg-muted text-muted-foreground">{fmtOI(totalOI)}</span>
+        )}
+      </div>
+
+      {loading ? skeleton : topOI.length === 0 ? empty : (
+        <div className="px-3 pt-1.5 pb-2 space-y-0.5">
+          {topOI.map((row, i) => {
+            const coin = row.symbol.replace(/USDT$/, "");
+            const pct  = totalOI > 0 ? (row.openInterest / totalOI) * 100 : 0;
+            return (
+              <div key={row.symbol} className="flex items-center gap-2 py-1">
+                <span className="text-[9px] text-muted-foreground w-3 tabular-nums">{i + 1}</span>
+                <span className="text-[11px] font-bold text-foreground w-14 truncate">{coin}</span>
+                <div className="flex-1 h-1.5 bg-muted rounded-full overflow-hidden">
+                  <div className="h-full rounded-full bg-primary/60 transition-all duration-700"
+                    style={{ width: `${Math.min(pct * 3, 100)}%` }} />
+                </div>
+                <span className="text-[10px] font-mono text-foreground tabular-nums w-14 text-right">{fmtOI(row.openInterest)}</span>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      <div className="border-t border-border" />
+
+      {/* ── Funding Rate ── */}
+      <div className="px-3 sm:px-4 pt-2.5 pb-0 flex items-center justify-between">
+        <span className="text-[9px] sm:text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">Funding Rate</span>
+        {!loading && data.length > 0 && (
+          <span className="text-[9px] font-medium tabular-nums" style={{ color: fundColor(avgFunding) }}>
+            avg {fmtFunding(avgFunding)}
+          </span>
+        )}
+      </div>
+
+      {loading ? skeleton : topFunding.length === 0 ? empty : (
+        <div className="px-3 pt-1.5 pb-2 space-y-0.5">
+          {topFunding.map((row) => {
+            const coin = row.symbol.replace(/USDT$/, "");
+            const fc   = fundColor(row.fundingRate);
+            const absPct = Math.abs(row.fundingRate * 100);
+            return (
+              <div key={row.symbol} className="flex items-center gap-2 py-1">
+                <span className="text-[11px] font-bold text-foreground w-14 truncate">{coin}</span>
+                <div className="flex-1 h-1.5 bg-muted rounded-full overflow-hidden">
+                  <div className="h-full rounded-full transition-all duration-700"
+                    style={{ width: `${Math.min(absPct / 0.1 * 100, 100)}%`, background: fc }} />
+                </div>
+                <span className="text-[10px] font-mono font-bold tabular-nums w-16 text-right" style={{ color: fc }}>
+                  {fmtFunding(row.fundingRate)}
+                </span>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* ── Footer ── */}
+      <div className="border-t border-border px-3 py-2 flex items-center justify-between">
+        <span className="text-[9px] text-muted-foreground">{data.length} symbols tracked</span>
+        <Link href="/derivatives" className="text-[9px] font-bold text-primary hover:underline">View All →</Link>
+      </div>
+    </div>
+  );
+}
+
 // ─── Scanner modules ──────────────────────────────────────────────────────────
 
 const MODULES = [
@@ -604,6 +720,8 @@ const MODULES = [
     desc: "ICT framework: liquidity sweeps, order blocks, fair value gaps, CHoCH and BOS structure." },
   { href: "/smc",           key: "smc",     label: "SMC Scanner",     sub: "Structure · BOS · CHoCH · S/D Zones", color: "#f59e0b", Ico: IcoSMC,
     desc: "Smart Money Concepts: 7-point confluence, supply/demand zones, inducement and mitigation." },
+  { href: "/derivatives",   key: "deriv",   label: "Derivatives",     sub: "OI · Funding Rate · Long/Short Ratio", color: "#6366f1", Ico: IcoDB,
+    desc: "Binance Futures derivatives data: open interest, funding rate sentiment, and long/short account ratios." },
   { href: "/history",       key: "history", label: "Signal Database", sub: "Historical · Filters · Export",       color: "#0ecb81", Ico: IcoDB,
     desc: "Full signal history with direction, source, score and date filters. CSV export." },
 ];
@@ -947,6 +1065,8 @@ export default function HomePage() {
   const [refreshing,  setRefreshing]  = useState(false);
   const [fearGreed,   setFearGreed]   = useState<{ value: number; classification: string; yesterday: number; lastWeek: number } | null>(null);
   const [marketGlobal, setMarketGlobal] = useState<{ btcDominance: number; totalMarketCap: number; totalVolume24h: number; marketCapChange24h: number } | null>(null);
+  const [derivatives,   setDerivatives]  = useState<DerivativeSymbol[]>([]);
+  const [derivLoading,  setDerivLoading] = useState(true);
 
   const loadSignals = async (spinner = false) => {
     if (spinner) setRefreshing(true);
@@ -964,8 +1084,8 @@ export default function HomePage() {
     setCgLoading(true);
     try {
       const d = await getCoinGeckoDataAction();
-      if (d.rateLimited) setCgError(true);
-      else { setCgData(d); setCgError(false); }
+      setCgData(d);
+      setCgError(d.rateLimited);
     } catch { setCgError(true); }
     finally { setCgLoading(false); }
   };
@@ -980,7 +1100,19 @@ export default function HomePage() {
     }
   };
 
-  useEffect(() => { loadSignals(); loadCG(); loadMarketExtras(); }, []);
+  const loadDerivatives = async () => {
+    setDerivLoading(true);
+    try {
+      const d = await getDerivativesAction();
+      setDerivatives(d.symbols);
+    } catch {
+      // silently degrade
+    } finally {
+      setDerivLoading(false);
+    }
+  };
+
+  useEffect(() => { loadSignals(); loadCG(); loadMarketExtras(); loadDerivatives(); }, []);
 
   const bulls    = signals.filter(s => s.direction === "LONG").length;
   const bears    = signals.filter(s => s.direction === "SHORT").length;
@@ -1359,6 +1491,9 @@ export default function HomePage() {
             <FearGreedCard data={fearGreed} />
             <MarketStatsCard data={marketGlobal} />
           </div>
+
+          {/* ── Derivatives ── */}
+          <DerivativesWidget data={derivatives} loading={derivLoading} />
 
         </div>
       </div>

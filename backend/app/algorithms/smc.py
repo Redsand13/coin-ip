@@ -181,12 +181,34 @@ class SMCEngine:
         atr = _calc_atr(df, period=14)
         frac_hi, frac_lo = _find_fractals(df, n=2)
 
-        results: list[SMCSetup] = []
+        # Pre-compute structure so we can gate direction before running full checks
+        structure_type, _ = self._detect_market_structure(df, frac_hi, frac_lo)
+
+        candidates: list[SMCSetup] = []
         for direction in ("LONG", "SHORT"):
+            # SMC core rule: only trade WITH structure unless it's a CHoCH reversal.
+            # A BOS Retest / Demand / Supply / Mitigation in a BEARISH structure is
+            # a counter-trend trade — high noise, low quality. Skip it.
+            # CHoCH is exempt because it IS the reversal signal (against structure by design).
+            if structure_type == "BULLISH" and direction == "SHORT":
+                # Allow only if a CHoCH is likely — do a quick fractal check
+                setup = self._check_direction(symbol, timeframe, df, direction, atr, frac_hi, frac_lo)
+                if setup and setup.has_choch and setup.confluence_count >= self.min_confluences:
+                    candidates.append(setup)
+                continue
+            if structure_type == "BEARISH" and direction == "LONG":
+                setup = self._check_direction(symbol, timeframe, df, direction, atr, frac_hi, frac_lo)
+                if setup and setup.has_choch and setup.confluence_count >= self.min_confluences:
+                    candidates.append(setup)
+                continue
+
             setup = self._check_direction(symbol, timeframe, df, direction, atr, frac_hi, frac_lo)
             if setup and setup.confluence_count >= self.min_confluences:
-                results.append(setup)
-        return results
+                candidates.append(setup)
+
+        if len(candidates) == 2:
+            return [max(candidates, key=lambda s: (s.confluence_count, s.quality))]
+        return candidates
 
     def scan(self, symbol: str, timeframe: str, df: pd.DataFrame) -> list[SMCSetup]:
         return self.scan_comprehensive(symbol, timeframe, df)
@@ -367,18 +389,19 @@ class SMCEngine:
                 fallback = float(df["high"].iloc[max(0, ref_end - self.swing_lookback): ref_end].max())
                 level = fallback
                 last_high = float(df.iloc[-1]["high"])
-                if float(df.iloc[-1]["close"]) > fallback or last_high > fallback:
+                if float(df.iloc[-1]["close"]) > fallback:
                     has_bos   = structure_type == "BULLISH"
                     has_choch = not has_bos
                 return has_bos, has_choch, level
 
-            # Check each fractal high against all bars AFTER it (within lookback)
+            # Check each fractal high against all bars AFTER it (within lookback).
+            # BOS/CHoCH require a candle CLOSE beyond the level — wicks don't confirm.
             for fh_idx in reversed(valid_hi):
                 swing_h = float(df.at[fh_idx, "high"])
                 level   = swing_h
                 for bar_i in range(max(scan_start, fh_idx + 1), L):
                     bar = df.iloc[bar_i]
-                    if float(bar["close"]) > swing_h or float(bar["high"]) > swing_h:
+                    if float(bar["close"]) > swing_h:
                         has_bos   = structure_type == "BULLISH"
                         has_choch = not has_bos
                         return has_bos, has_choch, swing_h
@@ -388,7 +411,7 @@ class SMCEngine:
                 fallback = float(df["low"].iloc[max(0, ref_end - self.swing_lookback): ref_end].min())
                 level = fallback
                 last_low = float(df.iloc[-1]["low"])
-                if float(df.iloc[-1]["close"]) < fallback or last_low < fallback:
+                if float(df.iloc[-1]["close"]) < fallback:
                     has_bos   = structure_type == "BEARISH"
                     has_choch = not has_bos
                 return has_bos, has_choch, level
@@ -398,7 +421,7 @@ class SMCEngine:
                 level   = swing_l
                 for bar_i in range(max(scan_start, fl_idx + 1), L):
                     bar = df.iloc[bar_i]
-                    if float(bar["close"]) < swing_l or float(bar["low"]) < swing_l:
+                    if float(bar["close"]) < swing_l:
                         has_bos   = structure_type == "BEARISH"
                         has_choch = not has_bos
                         return has_bos, has_choch, swing_l
@@ -455,13 +478,13 @@ class SMCEngine:
             if is_long:
                 valid_impulse = (
                     float(imp["close"]) > float(imp["open"]) and
-                    body / rng >= 0.55 and body >= atr * 0.7 and
+                    body / rng >= 0.55 and body >= atr * 1.0 and
                     float(imp["close"]) > base_high
                 )
             else:
                 valid_impulse = (
                     float(imp["close"]) < float(imp["open"]) and
-                    body / rng >= 0.55 and body >= atr * 0.7 and
+                    body / rng >= 0.55 and body >= atr * 1.0 and
                     float(imp["close"]) < base_low
                 )
             if not valid_impulse:
@@ -563,8 +586,8 @@ class SMCEngine:
             if len(cluster) < 2:
                 continue
             pool = float(np.mean(cluster))
-            swept = (is_long and last_low <= pool * (1 + self.sweep_threshold)) or \
-                    (not is_long and last_high >= pool * (1 - self.sweep_threshold))
+            swept = (is_long and last_low <= pool * (1 - self.sweep_threshold)) or \
+                    (not is_long and last_high >= pool * (1 + self.sweep_threshold))
             if swept:
                 return True, pool
 
@@ -630,7 +653,7 @@ class SMCEngine:
                 continue
             dir_ok  = (is_long and float(row["close"]) > float(row["open"])) or \
                       (not is_long and float(row["close"]) < float(row["open"]))
-            if rng >= atr * 0.8 and body / rng >= 0.58 and dir_ok:
+            if rng >= atr * 1.2 and body / rng >= 0.65 and dir_ok:
                 return True
 
         return False

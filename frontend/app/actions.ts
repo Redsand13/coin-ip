@@ -13,8 +13,10 @@ import {
   fetchSignalsCsv,
   fetchFuturesExchangeSymbols,
   fetchCoinGeckoMarket,
+  fetchDerivatives,
   triggerBinanceScan,
   type SignalQueryParams,
+  type DerivativeSymbol,
 } from "@/lib/api-client";
 
 import type { ApiSignal, ICTSignal } from "@/lib/types/signals";
@@ -32,7 +34,9 @@ const CANDLE_MS: Record<string, number> = {
  * just hydrate the right field names.
  */
 function toEFShape(sig: ApiSignal) {
-  const tsMs = new Date(sig.signal_time).getTime();
+  // created_at = exact first-detection time (never overwritten on upsert)
+  // signal_time = candle open time (used for DB dedup only — not for display)
+  const tsMs = new Date(sig.created_at).getTime();
   const tf = sig.timeframe;
   const candleMs = CANDLE_MS[tf] ?? 3_600_000;
   const flooredTs = Math.floor(tsMs / candleMs) * candleMs;
@@ -57,7 +61,7 @@ function toEFShape(sig: ApiSignal) {
     price:    sig.price,
     entryPrice:   sig.price,
     currentPrice: sig.price,
-    crossoverTimestamp: flooredTs,
+    crossoverTimestamp: tsMs,   // exact detection time, not floored to candle boundary
     change1h:  (extra.change_1h as number | undefined)  ?? (extra.change1h as number | undefined)  ?? 0,
     change24h: (extra.change_24h as number | undefined) ?? (extra.change24h as number | undefined) ?? 0,
     // volume_usdt_24h = 24h USDT quote volume from REST ticker (accurate)
@@ -88,7 +92,8 @@ function toEFShape(sig: ApiSignal) {
  * ICTTerminal component expects.
  */
 function toICTShape(sig: ApiSignal) {
-  const tsMs = new Date(sig.signal_time).getTime();
+  // created_at = exact first-detection time; signal_time = candle open (dedup only)
+  const tsMs = new Date(sig.created_at).getTime();
   const extra = (sig.extra ?? {}) as Record<string, unknown>;
 
   const isComprehensive = extra.ict_comprehensive === true;
@@ -142,8 +147,11 @@ function toICTShape(sig: ApiSignal) {
   const ezLow  = sig.order_block_bottom ?? sig.fvg_bottom ?? sig.price * (isLong ? 0.980 : 0.995);
   const ceLevel = (ezHigh + ezLow) / 2;
 
-  const stopLoss   = isLong ? ezLow  * (1 - 0.003) : ezHigh * (1 + 0.003);
-  const takeProfit = isLong ? ceLevel * (1 + tpPct) : ceLevel * (1 - tpPct);
+  const stopLoss   = isLong ? ezLow  * (1 - slPct) : ezHigh * (1 + slPct);
+  const slDist     = Math.abs(ceLevel - stopLoss);
+  // TP = at least 2:1 RR from actual SL distance; floor at tpPct to avoid tiny zones
+  const minTpDist  = Math.max(slDist * 2, ceLevel * tpPct);
+  const takeProfit = isLong ? ceLevel + minTpDist : ceLevel - minTpDist;
   const riskReward = Math.round(Math.abs(takeProfit - ceLevel) / Math.abs(ceLevel - stopLoss) * 10) / 10;
 
   // OTE zone (61.8–78.6 fib between sweep and structure)
@@ -279,7 +287,8 @@ export async function getBinanceFuturesSignalsAction(timeframe: string = "1h") {
  * All 7 confluence flags, zone levels, OB levels, and pd_context are mapped here.
  */
 function toSMCShape(sig: ApiSignal) {
-  const tsMs       = new Date(sig.signal_time).getTime();
+  // created_at = exact first-detection time; signal_time = candle open (dedup only)
+  const tsMs       = new Date(sig.created_at).getTime();
   const extra      = (sig.extra ?? {}) as Record<string, unknown>;
   const isLong     = sig.direction === "LONG";
 
@@ -319,9 +328,11 @@ function toSMCShape(sig: ApiSignal) {
   const ceLevel = (ezHigh + ezLow) / 2;
 
   const slPct  = 0.012;
-  const tpMult = hasCHoCH ? 0.030 : 0.022;   // CHoCH reversals get wider TP
+  const tpPct  = hasCHoCH ? 0.030 : 0.022;
   const stopLoss   = isLong ? ezLow  * (1 - slPct)  : ezHigh * (1 + slPct);
-  const takeProfit = isLong ? ceLevel * (1 + tpMult) : ceLevel * (1 - tpMult);
+  const slDist     = Math.abs(ceLevel - stopLoss);
+  const minTpDist  = Math.max(slDist * 2, ceLevel * tpPct);
+  const takeProfit = isLong ? ceLevel + minTpDist : ceLevel - minTpDist;
   const riskReward = Math.round(
     Math.abs(takeProfit - ceLevel) / Math.max(Math.abs(ceLevel - stopLoss), 1e-10) * 10
   ) / 10;
@@ -440,17 +451,23 @@ export async function getICTSignalsAction(timeframe: string = "1h") {
   try {
     const params: SignalQueryParams = {
       source: "ict",
-      limit: 100,
+      limit: 200,
       skip_count: true,
       from_ts: 1,          // bypass 48h default window — show all historical signals
-      min_confluence: 0.40, // ≥ 3 out of 7 ICT confluences
     };
     if (timeframe && timeframe !== "all") params.timeframe = timeframe;
 
     const data = await fetchSignals(params);
-    return data.items
-      .map(toICTShape)
-      .sort((a, b) => b.score - a.score);
+    const mapped = data.items.map(toICTShape).filter(s => s.score >= 55);
+
+    // Deduplicate: same coin + same timeframe → keep highest score only.
+    const seen = new Map<string, typeof mapped[0]>();
+    for (const s of mapped) {
+      const key = `${s.symbol}:${s.timeframe}`;
+      const existing = seen.get(key);
+      if (!existing || s.score > existing.score) seen.set(key, s);
+    }
+    return [...seen.values()].sort((a, b) => b.score - a.score);
   } catch (error) {
     return [];
   }
@@ -463,17 +480,23 @@ export async function getSMCSignalsAction(timeframe: string = "1h"): Promise<ICT
   try {
     const params: SignalQueryParams = {
       source: "smc",
-      limit: 100,
+      limit: 200,
       skip_count: true,
       from_ts: 1,          // bypass 48h default window
-      min_confluence: 0.30, // ≥ 2 out of 7 SMC confluences
     };
     if (timeframe && timeframe !== "all") params.timeframe = timeframe;
 
     const data = await fetchSignals(params);
-    return data.items
-      .map(toSMCShape)
-      .sort((a, b) => b.score - a.score) as unknown as ICTSignal[];
+    const mapped = data.items.map(toSMCShape).filter(s => s.score >= 50);
+
+    // Deduplicate: same coin + same timeframe → keep highest score only.
+    const seen = new Map<string, typeof mapped[0]>();
+    for (const s of mapped) {
+      const key = `${s.symbol}:${s.timeframe}`;
+      const existing = seen.get(key);
+      if (!existing || s.score > existing.score) seen.set(key, s);
+    }
+    return [...seen.values()].sort((a, b) => b.score - a.score) as unknown as ICTSignal[];
   } catch {
     return [];
   }
@@ -636,12 +659,12 @@ export async function getCoinGeckoDataAction(): Promise<{
     // Data is fetched once every 2 min by the backend scheduler and stored in
     // PostgreSQL — this call never hits CoinGecko directly regardless of user count.
     const d = await fetchCoinGeckoMarket();
-    return {
-      trending:    d.trending    as CGTrendingItem[],
-      gainers:     d.gainers     as CGMarketCoin[],
-      losers:      d.losers      as CGMarketCoin[],
-      rateLimited: d.stale,
-    };
+    const trending = (d.trending ?? []) as CGTrendingItem[];
+    const gainers  = (d.gainers  ?? []) as CGMarketCoin[];
+    const losers   = (d.losers   ?? []) as CGMarketCoin[];
+    // Only flag rate-limited if cache is truly empty (stale + no data)
+    const rateLimited = d.stale && trending.length === 0 && gainers.length === 0;
+    return { trending, gainers, losers, rateLimited };
   } catch {
     return { trending: [], gainers: [], losers: [], rateLimited: false };
   }
@@ -707,6 +730,21 @@ export async function getMarketGlobalAction(): Promise<{
     };
   } catch {
     return null;
+  }
+}
+
+/**
+ * Fetch derivatives market data (OI, funding rate, L/S ratio) from cached backend.
+ */
+export async function getDerivativesAction(): Promise<{
+  symbols: DerivativeSymbol[];
+  stale: boolean;
+  updatedAt: string | null;
+}> {
+  try {
+    return await fetchDerivatives();
+  } catch {
+    return { symbols: [], stale: true, updatedAt: null };
   }
 }
 

@@ -230,8 +230,8 @@ const SMCSignalRow = React.memo(function SMCSignalRow({
 
   const inZone  = signal.priceInZone || signal.status === "IN_ZONE";
   const ezMid   = signal.ceLevel;
-  const riskPct = Math.abs(ezMid - signal.stopLoss)   / signal.currentPrice * 100;
-  const rewPct  = Math.abs(signal.takeProfit - ezMid) / signal.currentPrice * 100;
+  const riskPct = Math.abs(ezMid - signal.stopLoss)   / ezMid * 100;
+  const rewPct  = Math.abs(signal.takeProfit - ezMid) / ezMid * 100;
 
   return (
     <TableRow className={cn("h-[44px] sm:h-[52px] hover:bg-muted/30 transition-colors", inZone && "bg-amber-500/5")}>
@@ -641,8 +641,11 @@ export default function SMCTerminal({ initialData = [], fetchAction }: SMCTermin
   const [filterDir,  setFilterDir]  = React.useState<"all" | "LONG" | "SHORT">("all");
   const [filterSetup,setFilterSetup]= React.useState("all");
   const [sortBy,     setSortBy]     = React.useState<"time" | "score" | "volume">("time");
+  const [minGrade,   setMinGrade]   = React.useState(0);
+  const [search,     setSearch]     = React.useState("");
+  const [onePerCoin, setOnePerCoin] = React.useState(true);
   const [page,       setPage]       = React.useState(0);
-  const deferredSearch = React.useDeferredValue("");
+  const deferredSearch = React.useDeferredValue(search);
   const knownIds       = React.useRef<Set<string>>(new Set());
 
   const load = React.useCallback(async (tf: string, isRefresh = false) => {
@@ -680,13 +683,47 @@ export default function SMCTerminal({ initialData = [], fetchAction }: SMCTermin
   }, [signals]);
 
   const filtered = React.useMemo(() => {
+    const q = deferredSearch.trim().toLowerCase();
     let list = timeframe === "all" ? signals : signals.filter(s => s.timeframe === timeframe);
     if (filterDir !== "all")   list = list.filter(s => s.signalType === filterDir);
     if (filterSetup !== "all") list = list.filter(s => s.setupType  === filterSetup);
-    if (sortBy === "score")  return [...list].sort((a, b) => b.score    - a.score);
-    if (sortBy === "volume") return [...list].sort((a, b) => b.volume24h - a.volume24h);
-    return [...list].sort((a, b) => b.timestamp - a.timestamp);
-  }, [signals, timeframe, filterDir, filterSetup, sortBy]);
+    if (minGrade > 0) {
+      list = list.filter(s => {
+        const g = [
+          s.hasBOS || s.hasCHoCH, s.hasSD, s.hasOB,
+          s.hasDisplacement, s.hasFVG,
+          s.hasEqualHL || s.hasInducement, s.hasMitigation,
+        ].filter(Boolean).length;
+        return g >= minGrade;
+      });
+    }
+    if (q) list = list.filter(s => s.symbol.toLowerCase().includes(q) || s.name.toLowerCase().includes(q));
+
+    // Sort first so "best" signal is picked during dedup
+    let sorted: SMCSignal[];
+    if (sortBy === "score")  sorted = [...list].sort((a, b) => b.score    - a.score);
+    else if (sortBy === "volume") sorted = [...list].sort((a, b) => b.volume24h - a.volume24h);
+    else sorted = [...list].sort((a, b) => b.timestamp - a.timestamp);
+
+    if (onePerCoin) {
+      const TF_RANK: Record<string, number> = { "1d": 6, "4h": 5, "1h": 4, "30m": 3, "15m": 2, "5m": 1 };
+      const best = new Map<string, SMCSignal>();
+      for (const s of sorted) {
+        const prev = best.get(s.symbol);
+        if (!prev) { best.set(s.symbol, s); continue; }
+        const newRank  = TF_RANK[s.timeframe]  ?? 0;
+        const prevRank = TF_RANK[prev.timeframe] ?? 0;
+        if (newRank > prevRank || (newRank === prevRank && s.score > prev.score))
+          best.set(s.symbol, s);
+      }
+      return [...best.values()].sort((a, b) =>
+        sortBy === "score"  ? b.score - a.score :
+        sortBy === "volume" ? b.volume24h - a.volume24h :
+        b.timestamp - a.timestamp
+      );
+    }
+    return sorted;
+  }, [signals, timeframe, filterDir, filterSetup, sortBy, minGrade, deferredSearch, onePerCoin]);
 
   const pages      = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
   const pageSlice  = filtered.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
@@ -800,12 +837,19 @@ export default function SMCTerminal({ initialData = [], fetchAction }: SMCTermin
       </div>
 
       {/* ── Filter Pills ── */}
-      <div className="flex flex-wrap gap-1 items-center">
+      <div className="flex flex-wrap gap-1.5 items-center">
         <div className="overflow-x-auto no-scrollbar">
         <div className="flex bg-muted/40 rounded-lg p-0.5 gap-px w-max">
-          {PILL("ALL",   filterDir === "all",   () => setFilterDir("all"))}
+          {PILL("ALL",     filterDir === "all",   () => setFilterDir("all"))}
           {PILL("BULLISH", filterDir === "LONG",  () => setFilterDir("LONG"),  "bg-[#0ecb81]/15 text-[#0ecb81]")}
           {PILL("BEARISH", filterDir === "SHORT", () => setFilterDir("SHORT"), "bg-[#f6465d]/15 text-[#f6465d]")}
+        </div>
+        </div>
+        <div className="overflow-x-auto no-scrollbar">
+        <div className="flex bg-muted/40 rounded-lg p-0.5 gap-px w-max">
+          {PILL("ALL GRADES", minGrade === 0, () => setMinGrade(0))}
+          {PILL("STRONG ≥4",  minGrade === 4, () => setMinGrade(4), "bg-primary/15 text-primary")}
+          {PILL("ELITE ≥5",   minGrade === 5, () => setMinGrade(5), "bg-amber-400/15 text-amber-400")}
         </div>
         </div>
         <div className="overflow-x-auto no-scrollbar">
@@ -814,6 +858,20 @@ export default function SMCTerminal({ initialData = [], fetchAction }: SMCTermin
             PILL(t === "all" ? "ALL SETUPS" : t, filterSetup === t, () => setFilterSetup(t))
           )}
         </div>
+        </div>
+        <div className="relative flex-1 min-w-[140px] max-w-xs">
+          <input
+            type="text"
+            placeholder="Search symbol..."
+            value={search}
+            onChange={e => setSearch(e.target.value)}
+            className="w-full h-8 pl-8 pr-3 rounded-lg border border-border bg-background text-[12px] focus:outline-none focus:ring-1 focus:ring-primary"
+          />
+          <Target size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-foreground" />
+        </div>
+        <div className="flex bg-muted/40 rounded-lg p-0.5 gap-px">
+          {PILL("1 per coin", onePerCoin,  () => setOnePerCoin(true),  "bg-primary/15 text-primary")}
+          {PILL("All TFs",    !onePerCoin, () => setOnePerCoin(false))}
         </div>
         <div className="flex bg-muted/40 rounded-lg p-0.5 gap-px ml-0 sm:ml-auto">
           {PILL("Time",   sortBy === "time",   () => setSortBy("time"))}

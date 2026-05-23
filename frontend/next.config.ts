@@ -11,6 +11,7 @@ const nextConfig: NextConfig = {
       { protocol: "https", hostname: "bin.bnbstatic.com" },
       { protocol: "https", hostname: "s2.coinmarketcap.com" },
       { protocol: "https", hostname: "coin-images.coingecko.com" },
+      { protocol: "https", hostname: "img.icons8.com" },
     ],
     minimumCacheTTL: 3600, // cache coin images for 1 hour
   },

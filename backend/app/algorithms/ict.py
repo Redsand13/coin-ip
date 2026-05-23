@@ -222,12 +222,29 @@ class ICTEngine:
         # Compute fractal pivots once for the full frame
         frac_hi, frac_lo = _find_fractals(df, n=2)
 
-        results: list[ComprehensiveICTSetup] = []
+        # Pre-compute structure bias to gate direction (same SMC core rule applies)
+        structure_type = self._detect_structure_type(df, frac_hi, frac_lo)
+
+        candidates: list[ComprehensiveICTSetup] = []
         for direction in ("LONG", "SHORT"):
+            if structure_type == "BULLISH" and direction == "SHORT":
+                setup = self._check_direction(symbol, timeframe, df, direction, atr, frac_hi, frac_lo)
+                if setup and setup.has_choch and setup.confluence_count >= self.min_confluences:
+                    candidates.append(setup)
+                continue
+            if structure_type == "BEARISH" and direction == "LONG":
+                setup = self._check_direction(symbol, timeframe, df, direction, atr, frac_hi, frac_lo)
+                if setup and setup.has_choch and setup.confluence_count >= self.min_confluences:
+                    candidates.append(setup)
+                continue
+
             setup = self._check_direction(symbol, timeframe, df, direction, atr, frac_hi, frac_lo)
             if setup and setup.confluence_count >= self.min_confluences:
-                results.append(setup)
-        return results
+                candidates.append(setup)
+
+        if len(candidates) == 2:
+            return [max(candidates, key=lambda s: (s.confluence_count, s.quality))]
+        return candidates
 
     # ── Direction analysis ────────────────────────────────────────────────────
 
@@ -366,12 +383,12 @@ class ICTEngine:
             if is_long:
                 prior_low = float(lookback["low"].min())
                 if (float(bar["low"]) < prior_low - buf and
-                        float(bar["close"]) > float(bar["open"])):
+                        float(bar["close"]) > prior_low):
                     return None, float(bar["low"]), True, bar_idx
             else:
                 prior_high = float(lookback["high"].max())
                 if (float(bar["high"]) > prior_high + buf and
-                        float(bar["close"]) < float(bar["open"])):
+                        float(bar["close"]) < prior_high):
                     return float(bar["high"]), None, True, bar_idx
 
         return None, None, False, None
@@ -394,7 +411,8 @@ class ICTEngine:
         count    = 0
         body_sum = 0.0
 
-        for _, row in df.iloc[start_idx:].iterrows():
+        end_idx = min(start_idx + 8, len(df))
+        for _, row in df.iloc[start_idx:end_idx].iterrows():
             rng  = float(row["high"]) - float(row["low"])
             body = abs(float(row["close"]) - float(row["open"]))
             if rng < 1e-10:

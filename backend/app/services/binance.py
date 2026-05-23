@@ -165,6 +165,27 @@ class BinanceFuturesClient:
         data = await self._get("/fapi/v1/ticker/24hr", params=params)
         return data if isinstance(data, list) else [data]
 
+    # ── Derivatives market data ───────────────────────────────────────────────
+
+    async def get_funding_rates_all(self) -> list[dict]:
+        """All symbols' premium index (mark price + funding rate) — single call."""
+        return await self._get("/fapi/v1/premiumIndex")
+
+    async def get_open_interest(self, symbol: str) -> dict:
+        """Open interest for a single symbol (in contracts)."""
+        return await self._get("/fapi/v1/openInterest", params={"symbol": symbol})
+
+    async def get_long_short_ratio(self, symbol: str, period: str = "5m") -> dict | None:
+        """Global long/short account ratio. Returns None on failure."""
+        try:
+            rows = await self._get(
+                "/futures/data/globalLongShortAccountRatio",
+                params={"symbol": symbol, "period": period, "limit": 1},
+            )
+            return rows[0] if rows else None
+        except Exception:
+            return None
+
     # ── Authenticated endpoints (require API key + signature) ─────────────────
 
     async def get_account_info(self) -> dict:

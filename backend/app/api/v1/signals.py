@@ -105,7 +105,7 @@ _DEFAULT_WINDOW_HOURS = 48
 def _apply_filters(q, *, source, direction, timeframe, symbol, min_ml_score,
                    min_confluence, from_ts, to_ts):
     if source:
-        q = q.where(Signal.source == source)
+        q = q.where(Signal.source.ilike(source))
     if direction:
         q = q.where(Signal.direction == direction)
     if timeframe:

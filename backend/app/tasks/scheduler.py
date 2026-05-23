@@ -30,6 +30,14 @@ async def _run_binance_scan() -> None:
         logger.error("Binance scan job failed", error=str(exc))
 
 
+async def _refresh_derivatives() -> None:
+    from app.services.derivatives import refresh_derivatives_cache
+    try:
+        await refresh_derivatives_cache()
+    except Exception as exc:
+        logger.error("Derivatives cache refresh failed", error=str(exc))
+
+
 async def _retrain_ml() -> None:
     from app.algorithms.ml_scorer import MLScorer
     from app.database import AsyncSessionFactory
@@ -102,6 +110,16 @@ async def start_scheduler() -> None:
         max_instances=1,
         coalesce=True,
         next_run_time=datetime.now(timezone.utc),  # run immediately on startup
+    )
+
+    # Derivatives market data — OI, funding rate, L/S ratio
+    _scheduler.add_job(
+        _refresh_derivatives,
+        trigger=IntervalTrigger(minutes=5),
+        id="derivatives_cache",
+        max_instances=1,
+        coalesce=True,
+        next_run_time=datetime.now(timezone.utc),
     )
 
     # ML retrain on labelled outcomes
