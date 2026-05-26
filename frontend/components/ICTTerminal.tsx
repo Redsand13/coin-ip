@@ -879,7 +879,7 @@ export default function ICTTerminal({ initialData = [], fetchAction, title, subt
         const seenIds = new Set(data.map(s => s.id));
         const merged = [...data, ...others.filter(s => !seenIds.has(s.id))];
         return merged
-          .sort((a, b) => b.score - a.score || b.sweepTimestamp - a.sweepTimestamp)
+          .sort((a, b) => b.sweepTimestamp - a.sweepTimestamp || b.score - a.score)
           .slice(0, MAX_SIGNALS);
       });
     } catch {
@@ -917,7 +917,7 @@ export default function ICTTerminal({ initialData = [], fetchAction, title, subt
 
   const filtered = useMemo(() => {
     const q = deferredSearch.trim().toLowerCase();
-    return signals.filter(s => {
+    const list = signals.filter(s => {
       if (timeframe !== "all" && s.timeframe !== timeframe) return false;
       if (filterType === "CONFIRMED"  && computeGrade(s) < MIN_ICT_GRADE) return false;
       if (filterType === "LONG"       && s.signalType !== "LONG")         return false;
@@ -927,6 +927,13 @@ export default function ICTTerminal({ initialData = [], fetchAction, title, subt
       if (filterType === "KILL_ZONE"  && !s.killZone)                     return false;
       if (!q) return true;
       return s.symbol.toLowerCase().includes(q) || s.name.toLowerCase().includes(q);
+    });
+    // Confirmed (grade >= MIN_ICT_GRADE) float to top, newest first within each group
+    return list.sort((a, b) => {
+      const aConfirmed = computeGrade(a) >= MIN_ICT_GRADE ? 1 : 0;
+      const bConfirmed = computeGrade(b) >= MIN_ICT_GRADE ? 1 : 0;
+      if (bConfirmed !== aConfirmed) return bConfirmed - aConfirmed;
+      return b.sweepTimestamp - a.sweepTimestamp;
     });
   }, [signals, deferredSearch, timeframe, filterType]);
 

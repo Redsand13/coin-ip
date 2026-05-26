@@ -7,7 +7,8 @@ from app.api.v1.health      import router as health_router
 from app.api.v1.push        import router as push_router
 from app.api.v1.exchanges   import router as exchanges_router
 from app.api.v1.coingecko   import router as coingecko_router
-from app.api.v1.derivatives import router as derivatives_router
+from app.api.v1.derivatives   import router as derivatives_router
+from app.api.v1.institutional import router as institutional_router
 
 api_v1 = APIRouter(prefix="/api/v1")
 api_v1.include_router(signals_router)
@@ -18,3 +19,4 @@ api_v1.include_router(push_router)
 api_v1.include_router(exchanges_router)
 api_v1.include_router(coingecko_router)
 api_v1.include_router(derivatives_router)
+api_v1.include_router(institutional_router)

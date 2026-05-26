@@ -87,15 +87,22 @@ export default function DerivativesTerminal({ fetchAction }: Props) {
   const [fundFilter, setFundFilter] = React.useState<FundFilter>("all");
   const [showInfo,   setShowInfo]   = React.useState(false);
 
+  const loadingRef = React.useRef(false);
+
   const load = React.useCallback(async () => {
+    if (loadingRef.current) return; // prevent concurrent fetches
+    loadingRef.current = true;
     setLoading(true);
     try {
       const res = await fetchAction();
       setData(res.symbols);
       setStale(res.stale);
       setUpdatedAt(res.updatedAt);
+    } catch {
+      // keep stale data on error — don't wipe the table
     } finally {
       setLoading(false);
+      loadingRef.current = false;
     }
   }, [fetchAction]);
 
@@ -986,13 +993,9 @@ function IconFunding({ color }: { color: string }) {
 function IconLongRisk({ color }: { color: string }) {
   return (
     <svg width="72" height="64" viewBox="0 0 72 64" fill="none">
-      {/* 3 rising bars */}
       <rect x="6"  y="36" width="14" height="24" rx="3" fill={color} fillOpacity="0.3"/>
       <rect x="26" y="22" width="14" height="38" rx="3" fill={color} fillOpacity="0.6"/>
       <rect x="46" y="8"  width="14" height="52" rx="3" fill={color}/>
-      {/* up arrow top-right */}
-      <path d="M58 4 L66 4 L66 12" stroke={color} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" strokeOpacity="0.8"/>
-      <line x1="58" y1="12" x2="66" y2="4" stroke={color} strokeWidth="2.5" strokeLinecap="round" strokeOpacity="0.8"/>
     </svg>
   );
 }
@@ -1000,13 +1003,9 @@ function IconLongRisk({ color }: { color: string }) {
 function IconShortRisk({ color }: { color: string }) {
   return (
     <svg width="72" height="64" viewBox="0 0 72 64" fill="none">
-      {/* 3 falling bars */}
       <rect x="6"  y="4"  width="14" height="52" rx="3" fill={color}/>
       <rect x="26" y="18" width="14" height="38" rx="3" fill={color} fillOpacity="0.6"/>
       <rect x="46" y="32" width="14" height="24" rx="3" fill={color} fillOpacity="0.3"/>
-      {/* down-right arrow */}
-      <path d="M58 52 L66 60 L58 60" stroke={color} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" strokeOpacity="0.8"/>
-      <line x1="46" y1="48" x2="66" y2="60" stroke={color} strokeWidth="2.5" strokeLinecap="round" strokeOpacity="0.8"/>
     </svg>
   );
 }

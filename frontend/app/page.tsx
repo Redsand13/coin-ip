@@ -1120,17 +1120,23 @@ export default function HomePage() {
     ? Math.round(signals.reduce((a, s) => a + Math.round((s.ml_score ?? s.confluence_score ?? 0) * 100), 0) / signals.length)
     : 0;
 
-  const hotSignals = [...signals]
-    .sort((a, b) => (b.ml_score ?? b.confluence_score ?? 0) - (a.ml_score ?? a.confluence_score ?? 0))
-    .slice(0, 8);
+  const hotSignals = React.useMemo(() =>
+    [...signals]
+      .sort((a, b) => (b.ml_score ?? b.confluence_score ?? 0) - (a.ml_score ?? a.confluence_score ?? 0))
+      .slice(0, 8),
+  [signals]);
 
-  const filtered = filterSrc === "all" ? signals : signals.filter(s => s.source === filterSrc);
+  const filtered = React.useMemo(() =>
+    filterSrc === "all" ? signals : signals.filter(s => s.source === filterSrc),
+  [signals, filterSrc]);
 
-  const sorted = [...filtered].sort((a, b) =>
-    sortBy === "score"
-      ? (b.ml_score ?? b.confluence_score ?? 0) - (a.ml_score ?? a.confluence_score ?? 0)
-      : new Date(b.signal_time).getTime() - new Date(a.signal_time).getTime()
-  );
+  const sorted = React.useMemo(() =>
+    [...filtered].sort((a, b) =>
+      sortBy === "score"
+        ? (b.ml_score ?? b.confluence_score ?? 0) - (a.ml_score ?? a.confluence_score ?? 0)
+        : new Date(b.signal_time).getTime() - new Date(a.signal_time).getTime()
+    ),
+  [filtered, sortBy]);
 
   const srcCounts: Record<string, number> = {};
   signals.forEach(s => { srcCounts[s.source] = (srcCounts[s.source] ?? 0) + 1; });

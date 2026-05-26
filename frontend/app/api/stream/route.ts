@@ -16,10 +16,11 @@ export async function GET(req: NextRequest) {
       headers: {
         Accept:      "text/event-stream",
         "X-API-Key": BACKEND_API_KEY,
+        Connection:  "keep-alive",
       },
-      signal: req.signal,   // abort when the browser disconnects
-      // @ts-expect-error — Node.js fetch needs duplex for streaming
-      duplex: "half",
+      // ⚠️  No signal — req.signal fires at request-end and kills SSE early.
+      // ⚠️  No duplex — SSE is read-only; duplex is only for request body streaming.
+      cache: "no-store",
     });
   } catch {
     return new Response("stream unavailable", { status: 503 });

@@ -1,0 +1,83 @@
+version: "3.9"
+
+services:
+  redis:
+    image: redis:7-alpine
+    restart: always
+    command: redis-server --maxmemory 512mb --maxmemory-policy allkeys-lru --save 60 1000
+    volumes:
+      - redis_data:/data
+    networks: [internal]
+
+  postgres:
+    image: postgres:16-alpine
+    restart: always
+    environment:
+      POSTGRES_DB: coinpree
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    networks: [internal]
+
+  pipeline:
+    build:
+      context: ./backend
+    restart: always
+    environment:
+      PIPELINE_ENABLED: "true"
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/coinpree
+      REDIS_URL: redis://redis:6379/0
+      SECRET_KEY: ${SECRET_KEY}
+      API_KEY: ${API_KEY}
+    networks: [internal]
+    depends_on: [redis, postgres]
+    deploy:
+      replicas: 1  # MUST be exactly 1 — manages the Binance WebSocket
+
+  api:
+    build:
+      context: ./backend
+    restart: always
+    environment:
+      PIPELINE_ENABLED: "false"
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/coinpree
+      REDIS_URL: redis://redis:6379/0
+      SECRET_KEY: ${SECRET_KEY}
+      API_KEY: ${API_KEY}
+    networks: [internal]
+    depends_on: [redis, postgres, pipeline]
+    deploy:
+      replicas: 4
+
+  frontend:
+    build:
+      context: ./frontend
+    restart: always
+    environment:
+      BACKEND_URL: http://api:8000
+    networks: [internal, external]
+    deploy:
+      replicas: 2
+
+  nginx:
+    image: nginx:1.27-alpine
+    restart: always
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/ssl:/etc/nginx/ssl:ro
+    networks: [internal, external]
+    depends_on: [frontend, api]
+
+volumes:
+  redis_data:
+  pg_data:
+
+networks:
+  internal:
+    driver: bridge
+  external:
+    driver: bridge

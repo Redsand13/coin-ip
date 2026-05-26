@@ -1,213 +1,151 @@
 "use client";
 
 import * as React from "react";
+import { motion } from "framer-motion";
 import { useTheme } from "@/components/theme-provider";
-import {
-  Zap,
-  Sun,
-  Moon,
-  Activity,
-  TrendingUp,
-  Target,
-  Database,
-  Home,
-  BarChart3,
-} from "lucide-react";
-import { Button } from "@/components/ui/button";
+import { Zap, Sun, Moon } from "lucide-react";
 import { cn } from "@/lib/utils";
-
 import { usePathname } from "next/navigation";
 import Link from "next/link";
+
+const NAV_ITEMS = [
+  { href: "/derivatives",   label: "Market Sentiment", short: "Sentiment" },
+  { href: "/market-flow",   label: "Market Flow",      short: "Flow"      },
+  { href: "/ema3crossover", label: "EMA 3 Cross",      short: "EMA"       },
+  { href: "/ict",           label: "ICT",              short: "ICT"       },
+  { href: "/smc",           label: "SMC",              short: "SMC"       },
+  { href: "/history",       label: "Signal Database",  short: "DB"        },
+] as const;
 
 export default function AppLayout({ children }: { children: React.ReactNode }) {
   const { theme, setTheme } = useTheme();
   const [mounted, setMounted] = React.useState(false);
   const pathname = usePathname();
 
-  React.useEffect(() => {
-    setMounted(true);
-  }, []);
+  React.useEffect(() => { setMounted(true); }, []);
 
   return (
     <div className="flex flex-col h-screen bg-background text-foreground overflow-hidden font-sans">
-      {/* Top Bar */}
-      <header className="h-[52px] border-b border-border bg-[var(--header-bg)] flex items-center px-3 sm:px-6 z-50 shrink-0 transition-colors duration-200">
-        {/* Logo Area */}
-        <div className="flex items-center gap-3">
-          <div className="w-9 h-9 rounded-lg bg-gradient-to-br from-primary to-primary/70 flex items-center justify-center text-white shrink-0 shadow-lg shadow-primary/20">
-            <Zap className="w-5 h-5 fill-current" />
+
+      {/* ── Top Bar ─────────────────────────────────────────────────────────── */}
+      <header
+        className="h-[54px] border-b border-border/60 flex items-center px-4 sm:px-6 z-50 shrink-0 transition-colors duration-200"
+        style={{ background: "var(--header-bg)", backdropFilter: "blur(16px)" }}
+      >
+        {/* Logo */}
+        <Link href="/" className="flex items-center gap-2.5 shrink-0 group mr-5">
+          <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-primary to-primary/60 flex items-center justify-center text-white shadow-md shadow-primary/20 group-hover:shadow-lg group-hover:shadow-primary/30 transition-all duration-200">
+            <Zap className="w-4 h-4 fill-current" />
           </div>
-          <div className="flex flex-col">
-            <span className="font-black text-[var(--header-text)] text-[15px] sm:text-[18px] tracking-tight leading-none">
-              Coinpree
-            </span>
-            <span className="text-[9px] font-bold text-[var(--header-subtext)] uppercase tracking-widest">
+          <div className="flex flex-col leading-none hidden sm:flex">
+            <span className="font-black text-foreground text-[14px] tracking-tight">Coinpree</span>
+            <span className="text-[8px] font-bold text-muted-foreground uppercase tracking-[0.13em] mt-px">
               Algo Terminal
             </span>
           </div>
-        </div>
+        </Link>
 
-        {/* Vertical Divider */}
-        <div className="hidden sm:block h-8 w-px bg-border mx-6" />
+        {/* Divider */}
+        <div className="hidden md:block h-6 w-px bg-border/60 mr-4" />
 
-        {/* Navigation */}
-        <div className="hidden md:flex items-center gap-1 mr-6">
-          <Link href="/ema3crossover">
-            <Button
-              variant={pathname === "/ema3crossover" ? "secondary" : "ghost"}
-              className={cn(
-                "h-8 text-[12px] font-bold px-3",
-                pathname === "/ema3crossover"
-                  ? "bg-primary/10 text-primary hover:bg-primary/15"
-                  : "text-muted-foreground hover:text-foreground"
-              )}
-            >
-              EMA 3 Cross
-            </Button>
-          </Link>
-          <Link href="/ict">
-            <Button
-              variant={pathname === "/ict" ? "secondary" : "ghost"}
-              className={cn(
-                "h-8 text-[12px] font-bold px-3",
-                pathname === "/ict"
-                  ? "bg-primary/10 text-primary hover:bg-primary/15"
-                  : "text-muted-foreground hover:text-foreground"
-              )}
-            >
-              ICT
-            </Button>
-          </Link>
-          <Link href="/smc">
-            <Button
-              variant={pathname === "/smc" ? "secondary" : "ghost"}
-              className={cn(
-                "h-8 text-[12px] font-bold px-3",
-                pathname === "/smc"
-                  ? "bg-primary/10 text-primary hover:bg-primary/15"
-                  : "text-muted-foreground hover:text-foreground"
-              )}
-            >
-              SMC
-            </Button>
-          </Link>
-          <Link href="/derivatives">
-            <Button
-              variant={pathname === "/derivatives" ? "secondary" : "ghost"}
-              className={cn(
-                "h-8 text-[12px] font-bold px-3",
-                pathname === "/derivatives"
-                  ? "bg-primary/10 text-primary hover:bg-primary/15"
-                  : "text-muted-foreground hover:text-foreground"
-              )}
-            >
-              Market Sentiment
-            </Button>
-          </Link>
-          <Link href="/history">
-            <Button
-              variant={pathname === "/history" ? "secondary" : "ghost"}
-              className={cn(
-                "h-8 text-[12px] font-bold px-3 ml-2",
-                pathname === "/history"
-                  ? "bg-primary/10 text-primary hover:bg-primary/15"
-                  : "text-muted-foreground hover:text-foreground"
-              )}
-            >
-              <Database size={13} className="mr-1.5" />
-              Signal Database
-            </Button>
-          </Link>
-        </div>
-
-        {/* Search */}
-
+        {/* ── Desktop Navigation ─────────────────────────────────────────── */}
+        <nav className="hidden md:flex items-center gap-0.5" aria-label="Main navigation">
+          {NAV_ITEMS.map(({ href, label }) => {
+            const active = pathname === href;
+            return (
+              <Link key={href} href={href}>
+                <div
+                  className={cn(
+                    "relative h-[30px] px-3 rounded-lg flex items-center",
+                    "text-[11.5px] font-semibold cursor-pointer select-none whitespace-nowrap",
+                    "transition-colors duration-150",
+                    active
+                      ? "text-primary"
+                      : "text-muted-foreground hover:text-foreground hover:bg-foreground/[0.05]"
+                  )}
+                >
+                  {active && (
+                    <motion.span
+                      layoutId="nav-active-pill"
+                      className="absolute inset-0 rounded-lg bg-primary/10 border border-primary/15"
+                      transition={{ type: "spring", stiffness: 400, damping: 35 }}
+                    />
+                  )}
+                  <span className="relative z-10">{label}</span>
+                </div>
+              </Link>
+            );
+          })}
+        </nav>
 
         <div className="flex-1" />
 
-        {/* Right Side Actions */}
-        <div className="flex items-center gap-3">
-          {/* Stats Removed as per request */}
+        {/* Theme toggle */}
+        <button
+          onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
+          className="h-8 w-8 rounded-lg flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-foreground/[0.06] transition-colors"
+          suppressHydrationWarning
+          aria-label="Toggle theme"
+        >
+          {mounted
+            ? theme === "dark" ? <Sun size={15} strokeWidth={2} /> : <Moon size={15} strokeWidth={2} />
+            : <Sun size={15} strokeWidth={2} />}
+        </button>
+      </header>
 
-          <Button
-            variant="ghost"
-            size="icon"
-            className="h-9 w-9 text-[var(--header-subtext)] hover:text-[var(--header-text)] hover:bg-[var(--header-search-bg)] rounded-lg transition-colors"
-            onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
-            suppressHydrationWarning
-          >
-            {mounted ? (theme === "dark" ? <Sun size={18} /> : <Moon size={18} />) : <Sun size={18} />}
-          </Button>
-
-        </div>
-      </header >
-
+      {/* ── Page Body ───────────────────────────────────────────────────────── */}
       <div className="flex flex-1 overflow-hidden">
-        {/* Main Content Area */}
         <div className="flex-1 flex flex-col overflow-hidden bg-background">
-          {/* Content Viewport */}
-          <main className="flex-1 overflow-y-auto p-3 sm:p-4 md:p-6 lg:p-8 pb-20 md:pb-8 space-y-4 md:space-y-6 bg-background scroll-smooth">
+          <main className="flex-1 overflow-y-auto p-3 sm:p-4 md:p-6 lg:p-8 pb-20 md:pb-8 space-y-4 md:space-y-6 scroll-smooth">
             <div className="max-w-[1600px] mx-auto">{children}</div>
           </main>
 
-          <footer className="bg-card border-t border-border py-3 px-6 text-[10px] text-muted-foreground flex items-center justify-center shrink-0 hidden md:flex">
+          <footer className="bg-card border-t border-border py-3 px-6 text-[10px] text-muted-foreground hidden md:flex items-center justify-center shrink-0">
             <div className="flex items-center gap-4">
               <span className="font-bold">© 2026 Coinpree</span>
-              <span className="opacity-50">|</span>
-              <Link href="/disclaimer" className="hover:text-foreground transition-colors">
-                Disclaimer
-              </Link>
-              <span className="opacity-50">|</span>
-              <Link href="/terms" className="hover:text-foreground transition-colors">
-                Terms of Service
-              </Link>
-              <span className="opacity-50">|</span>
-              <Link href="/privacy" className="hover:text-foreground transition-colors">
-                Privacy Policy
-              </Link>
-
+              <span className="opacity-40">|</span>
+              <Link href="/disclaimer" className="hover:text-foreground transition-colors">Disclaimer</Link>
+              <span className="opacity-40">|</span>
+              <Link href="/terms" className="hover:text-foreground transition-colors">Terms of Service</Link>
+              <span className="opacity-40">|</span>
+              <Link href="/privacy" className="hover:text-foreground transition-colors">Privacy Policy</Link>
             </div>
           </footer>
         </div>
       </div>
 
-      {/* Mobile Bottom Navigation */}
-      <div className="md:hidden fixed bottom-0 left-0 right-0 h-16 bg-card border-t border-border flex items-center justify-around z-50 px-2 pb-safe">
-        <Link href="/" className="flex flex-col items-center gap-0.5 w-full h-full justify-center">
-          <div className={cn("p-1.5 rounded-lg transition-colors", pathname === "/" ? "bg-primary/10 text-primary" : "text-muted-foreground")}>
-            <Home size={18} className={cn(pathname === "/" && "fill-current")} />
-          </div>
-          <span className={cn("text-[9px] font-bold", pathname === "/" ? "text-primary" : "text-muted-foreground")}>Home</span>
-        </Link>
-
-        <Link href="/ema3crossover" className="flex flex-col items-center gap-0.5 w-full h-full justify-center">
-          <div className={cn("p-1.5 rounded-lg transition-colors", pathname === "/ema3crossover" ? "bg-primary/10 text-primary" : "text-muted-foreground")}>
-            <TrendingUp size={18} className={cn(pathname === "/ema3crossover" && "fill-current")} />
-          </div>
-          <span className={cn("text-[9px] font-bold", pathname === "/ema3crossover" ? "text-primary" : "text-muted-foreground")}>EMA</span>
-        </Link>
-
-        <Link href="/ict" className="flex flex-col items-center gap-0.5 w-full h-full justify-center">
-          <div className={cn("p-1.5 rounded-lg transition-colors", pathname === "/ict" ? "bg-primary/10 text-primary" : "text-muted-foreground")}>
-            <Target size={18} className={cn(pathname === "/ict" && "fill-current")} />
-          </div>
-          <span className={cn("text-[9px] font-bold", pathname === "/ict" ? "text-primary" : "text-muted-foreground")}>ICT</span>
-        </Link>
-
-        <Link href="/smc" className="flex flex-col items-center gap-0.5 w-full h-full justify-center">
-          <div className={cn("p-1.5 rounded-lg transition-colors", pathname === "/smc" ? "bg-primary/10 text-primary" : "text-muted-foreground")}>
-            <Activity size={18} className={cn(pathname === "/smc" && "fill-current")} />
-          </div>
-          <span className={cn("text-[9px] font-bold", pathname === "/smc" ? "text-primary" : "text-muted-foreground")}>SMC</span>
-        </Link>
-
-        <Link href="/derivatives" className="flex flex-col items-center gap-0.5 w-full h-full justify-center">
-          <div className={cn("p-1.5 rounded-lg transition-colors", pathname === "/derivatives" ? "bg-primary/10 text-primary" : "text-muted-foreground")}>
-            <BarChart3 size={18} className={cn(pathname === "/derivatives" && "fill-current")} />
-          </div>
-          <span className={cn("text-[9px] font-bold", pathname === "/derivatives" ? "text-primary" : "text-muted-foreground")}>Sentiment</span>
-        </Link>
+      {/* ── Mobile Bottom Navigation ─────────────────────────────────────────── */}
+      <div className="md:hidden fixed bottom-0 left-0 right-0 z-50 border-t border-border/60"
+        style={{ background: "var(--header-bg)", backdropFilter: "blur(16px)" }}
+      >
+        <div className="flex items-stretch justify-around h-[56px]">
+          {NAV_ITEMS.map(({ href, short }) => {
+            const active = pathname === href;
+            return (
+              <Link
+                key={href}
+                href={href}
+                className="flex flex-col items-center justify-center flex-1 relative"
+              >
+                {active && (
+                  <motion.span
+                    layoutId="mobile-nav-pill"
+                    className="absolute top-0 left-1/2 -translate-x-1/2 h-[2px] w-8 rounded-full bg-primary"
+                    transition={{ type: "spring", stiffness: 400, damping: 35 }}
+                  />
+                )}
+                <span className={cn(
+                  "text-[9px] font-bold",
+                  active ? "text-primary" : "text-muted-foreground"
+                )}>
+                  {short}
+                </span>
+              </Link>
+            );
+          })}
+        </div>
       </div>
-    </div >
+
+    </div>
   );
 }

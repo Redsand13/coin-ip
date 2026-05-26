@@ -3,6 +3,9 @@ import type { NextConfig } from "next";
 const nextConfig: NextConfig = {
   reactStrictMode: true,
 
+  // Required for Docker standalone deployment (copies only the minimal server bundle)
+  output: "standalone",
+
   compress: true,
 
   images: {

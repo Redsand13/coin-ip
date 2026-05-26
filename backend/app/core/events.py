@@ -61,6 +61,10 @@ async def lifespan(app: FastAPI):
     # Migrate native PostgreSQL enums → VARCHAR (idempotent, safe on fresh DBs)
     await _migrate_native_enums()
 
+    # Import all models so Base.metadata knows about them before create_all
+    import app.models.signal       # noqa: F401
+    import app.models.market_flow  # noqa: F401
+
     # Create tables that do not yet exist
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
@@ -70,11 +74,29 @@ async def lifespan(app: FastAPI):
     await start_scheduler()
     logger.info("Background scheduler started")
 
+    # Start institutional order flow pipeline (only on the dedicated pipeline worker)
+    from app.config import settings
+    from app.services.institutional.pipeline import get_pipeline
+    if settings.PIPELINE_ENABLED:
+        try:
+            pipeline = get_pipeline()
+            await pipeline.start()
+            logger.info("Institutional pipeline started")
+        except Exception as exc:
+            logger.warning("Institutional pipeline failed to start", error=str(exc))
+    else:
+        logger.info("Institutional pipeline disabled (API-only replica)")
+
     yield
 
     # ── Shutdown ─────────────────────────────────────────────────────────────
     from app.tasks.scheduler import stop_scheduler
     await stop_scheduler()
+
+    from app.config import settings as _s
+    if _s.PIPELINE_ENABLED:
+        from app.services.institutional.pipeline import get_pipeline as _gp
+        await _gp().stop()
 
     await engine.dispose()
     logger.info("Engine shutdown complete")

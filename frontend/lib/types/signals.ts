@@ -152,6 +152,53 @@ export interface ApiSignalPage {
 
 // ── History page (DB signal shape from FastAPI) ────────────────────────────────
 
+// ── Institutional Order Flow ───────────────────────────────────────────────────
+
+export interface InstitutionalDetection {
+  kind: string;
+  direction: "LONG" | "SHORT" | "NEUTRAL";
+  confidence: number;
+  details: Record<string, unknown>;
+}
+
+export type VwapZone = "PREMIUM" | "DISCOUNT" | "EQUILIBRIUM";
+
+export interface InstitutionalFlow {
+  symbol: string;
+  spot_price: number;
+  futures_price: number;
+  mark_price: number;
+  funding_rate: number;
+  open_interest: number;
+  oi_delta: number;
+  cvd_5m: number;
+  cvd_15m: number;
+  cvd_total: number;
+  vwap: number;
+  vwap_std: number;
+  vwap_zone: VwapZone;
+  vwap_pct: number;
+  bid_imbalance: number;
+  book_pressure: number;
+  volume_24h: number;
+  vol_ma5: number;
+  liq_buy_usd: number;
+  liq_sell_usd: number;
+  spot_futures_div: number;
+  high_24h: number;
+  low_24h: number;
+  confidence: number;
+  direction: "LONG" | "SHORT" | "NEUTRAL";
+  detections: InstitutionalDetection[];
+  updated_at: number;
+}
+
+export interface InstitutionalFlowList {
+  symbols: InstitutionalFlow[];
+  count: number;
+  tracked: number;
+}
+
 export interface DbSignal {
   id: string;
   symbol: string;

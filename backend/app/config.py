@@ -64,6 +64,10 @@ class Settings(BaseSettings):
     VAPID_PUBLIC_KEY: str = ""
     VAPID_CLAIM_EMAIL: str = "admin@coinpree.com"
 
+    # ── Scaling ───────────────────────────────────────────────────────────────
+    PIPELINE_ENABLED: bool = True  # False for API-only replicas
+    FLOW_CACHE_TTL: int = 5        # seconds to cache /flow response in Redis
+
     # ── Logging ───────────────────────────────────────────────────────────────
     LOG_LEVEL: str = "INFO"
     LOG_FORMAT: Literal["json", "console"] = "json"
